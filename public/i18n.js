@@ -1,6 +1,10 @@
 // Textos de la interfaz. Español es la base; inglés y portugués listos para activar desde el perfil.
 export const dict = {
   es: {
+    b_brand: 'Marca', b_model: 'Modelo', b_length: 'Largo', b_width: 'Ancho', b_thickness: 'Grosor', b_volume: 'Volumen (L)', b_construction: 'Composición', b_name: 'Nombre visible', b_details: 'Otros detalles', b_details_ph: 'Quillas, rocker, shaper…',
+    b_need_one: 'Completa al menos marca, modelo o largo.', b_no_specs: 'Sin ficha técnica',
+    my_body: 'Mis datos', my_body_help: 'Altura, peso y edad con fecha, para ver tu evolución. Solo tú los ves.', m_recorded_on: 'Fecha', m_height_cm: 'Altura (cm)', m_weight_kg: 'Peso (kg)', m_age: 'Edad', m_none: 'Aún no registras datos.',
+    fc_edit: 'Editar forecast', fc_edited: 'Datos ingresados por el usuario (fuente: {s}).', fc_source_label: 'Fuente de estos datos',
     session_title: 'La sesión', session_day: 'Día', session_time: 'Hora aprox. de entrada', videos_step: 'Los videos de esa sesión',
     reading_date: 'Leyendo la fecha del archivo…', time_from_file: 'hora del archivo', time_from_session: 'hora de la sesión', date_other_day: 'el archivo dice {d}',
     date_multi_days: 'Hay videos de días distintos. Sube cada día por separado para que queden juntos.', date_no_meta: 'Algunos videos no traen la fecha de grabación (pasa con WhatsApp). Confirma el día de la sesión.',
@@ -52,6 +56,10 @@ export const dict = {
     err_bad_username: 'Usuario inválido: usa letras, números, punto o guion.', err_short_password: 'La clave debe tener al menos 6 caracteres.', err_forbidden: 'No tienes permiso.',
   },
   en: {
+    b_brand: 'Brand', b_model: 'Model', b_length: 'Length', b_width: 'Width', b_thickness: 'Thickness', b_volume: 'Volume (L)', b_construction: 'Construction', b_name: 'Display name', b_details: 'Other details', b_details_ph: 'Fins, rocker, shaper…',
+    b_need_one: 'Fill in at least brand, model or length.', b_no_specs: 'No specs',
+    my_body: 'My data', my_body_help: 'Height, weight and age with date, to track your progress. Only you can see them.', m_recorded_on: 'Date', m_height_cm: 'Height (cm)', m_weight_kg: 'Weight (kg)', m_age: 'Age', m_none: 'No data yet.',
+    fc_edit: 'Edit forecast', fc_edited: 'Data entered by the user (source: {s}).', fc_source_label: 'Source of this data',
     session_title: 'The session', session_day: 'Day', session_time: 'Approx. paddle-out time', videos_step: 'Videos from that session',
     reading_date: 'Reading the file date…', time_from_file: 'time from file', time_from_session: 'session time', date_other_day: 'the file says {d}',
     date_multi_days: 'There are videos from different days. Upload each day separately so they stay together.', date_no_meta: 'Some videos have no recording date (WhatsApp strips it). Confirm the session day.',
@@ -98,6 +106,10 @@ export const dict = {
     err_bad_username: 'Invalid username: use letters, numbers, dot or dash.', err_short_password: 'Password must be at least 6 characters.', err_forbidden: 'Not allowed.',
   },
   pt: {
+    b_brand: 'Marca', b_model: 'Modelo', b_length: 'Comprimento', b_width: 'Largura', b_thickness: 'Espessura', b_volume: 'Volume (L)', b_construction: 'Construção', b_name: 'Nome visível', b_details: 'Outros detalhes', b_details_ph: 'Quilhas, rocker, shaper…',
+    b_need_one: 'Preencha ao menos marca, modelo ou comprimento.', b_no_specs: 'Sem ficha técnica',
+    my_body: 'Meus dados', my_body_help: 'Altura, peso e idade com data, para ver sua evolução. Só você vê.', m_recorded_on: 'Data', m_height_cm: 'Altura (cm)', m_weight_kg: 'Peso (kg)', m_age: 'Idade', m_none: 'Ainda sem dados.',
+    fc_edit: 'Editar previsão', fc_edited: 'Dados inseridos pelo usuário (fonte: {s}).', fc_source_label: 'Fonte destes dados',
     session_title: 'A sessão', session_day: 'Dia', session_time: 'Hora aprox. de entrada', videos_step: 'Os vídeos dessa sessão',
     reading_date: 'Lendo a data do arquivo…', time_from_file: 'hora do arquivo', time_from_session: 'hora da sessão', date_other_day: 'o arquivo diz {d}',
     date_multi_days: 'Há vídeos de dias diferentes. Envie cada dia separado para ficarem juntos.', date_no_meta: 'Alguns vídeos não têm a data de gravação (acontece com WhatsApp). Confirme o dia da sessão.',

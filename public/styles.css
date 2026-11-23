@@ -44,7 +44,7 @@ h3 { font-size: .95rem; margin: 1.2rem 0 .5rem; text-transform: uppercase; lette
 .btn.danger { background: transparent; color: var(--coral); border: 1px solid #f0c9bb; }
 .btn.big { width: 100%; padding: 13px; margin-top: 12px; font-size: 1rem; }
 button.link { background: none; border: 0; color: var(--coral); cursor: pointer; padding: 0; font: inherit; }
-input[type=text], input[type=email], input[type=password], input[type=datetime-local], select, textarea {
+input[type=text], input[type=email], input[type=password], input[type=number], input[type=date], input[type=time], input[type=datetime-local], select, textarea {
   font: inherit; padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--ink); width: 100%;
 }
 textarea { resize: vertical; }
@@ -323,3 +323,22 @@ details.fc-details { background: #fff; border-radius: var(--radius); box-shadow:
 details.fc-details summary { font-weight: 600; }
 details.fc-details[open] summary { margin-bottom: 8px; }
 @media (max-width: 860px) { .session-row { grid-template-columns: 1fr 1fr; } .session-row > :last-child { grid-column: span 2; } }
+
+/* ---------- v4: ficha de tablas, datos del surfista, forecast editable ---------- */
+.card.inset { box-shadow: none; border: 1px solid var(--line); background: #fbfaf6; margin: 8px 0; }
+.board-form { display: grid; gap: 10px; }
+.bf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.bf-grid input[type=number] { width: 100%; }
+.board-specs { text-align: right; margin-top: -4px; padding-bottom: 6px; }
+.metrics-form { display: grid; grid-template-columns: 150px repeat(3, minmax(80px, 1fr)) auto; gap: 10px; align-items: end; }
+.metrics-form input { width: 100%; }
+table.metrics { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: .88rem; }
+table.metrics th { text-align: left; color: var(--muted); font-weight: 600; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+table.metrics td { padding: 6px 4px; border-bottom: 1px dashed var(--line); }
+.fc-in { width: 100%; min-width: 0; padding: 4px 2px !important; font-size: .78rem !important; border-radius: 6px !important; text-align: center; }
+.fc-table.editing .stack { gap: 3px; }
+.fc-edit-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: flex-end; }
+.fc-src-in { width: 180px !important; padding: 6px 10px !important; }
+.fc-edit-btn { margin-left: 8px; }
+.edited-badge { background: #fff4e0; color: #7a4a0b; padding: 2px 8px; border-radius: 999px; }
+@media (max-width: 860px) { .metrics-form { grid-template-columns: 1fr 1fr; } }

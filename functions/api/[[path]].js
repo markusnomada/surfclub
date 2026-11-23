@@ -24,6 +24,38 @@ function cleanVideoInput(body) {
   return v;
 }
 
+
+// ---------- tablas: ficha técnica (todo opcional salvo un nombre, que se arma solo) ----------
+const BOARD_TEXT = { brand: 60, model: 60, length: 20, width: 20, thickness: 20, construction: 40, details: 300 };
+function boardInput(raw, partial = false) {
+  const b = {};
+  for (const [k, max] of Object.entries(BOARD_TEXT)) if (k in raw) b[k] = raw[k] == null ? null : String(raw[k]).trim().slice(0, max) || null;
+  if ('volume' in raw) { const v = parseFloat(String(raw.volume ?? '').replace(',', '.')); b.volume = Number.isFinite(v) && v > 0 && v < 200 ? Math.round(v * 10) / 10 : null; }
+  let name = 'name' in raw ? String(raw.name || '').trim().slice(0, 80) : '';
+  if (!name && !partial) name = [b.brand, b.model, b.length].filter(Boolean).join(' ');
+  if (name || !partial) b.name = name;
+  if (!partial || 'owner_email' in raw) b._owner = raw.owner_email;
+  return b;
+}
+
+// ---------- condiciones editadas por el usuario ----------
+const num = (v, min, max, d = 1) => { const n = parseFloat(String(v ?? '').replace(',', '.')); return Number.isFinite(n) && n >= min && n <= max ? Math.round(n * 10 ** d) / 10 ** d : null; };
+const WIND_STATES = ['onshore', 'cross-on', 'cross', 'cross-off', 'offshore'];
+function cleanConditions(c) {
+  if (!c || typeof c !== 'object' || !Array.isArray(c.day)) return null;
+  const day = c.day.slice(0, 8).map((d) => ({
+    h: Math.max(0, Math.min(23, parseInt(d.h, 10) || 0)),
+    wave: num(d.wave, 0, 30), swell: num(d.swell, 0, 30), period: num(d.period, 0, 30, 0), swell_dir: num(d.swell_dir, 0, 360, 0),
+    wind: num(d.wind, 0, 200, 0), gust: num(d.gust, 0, 250, 0), wind_dir: num(d.wind_dir, 0, 360, 0),
+    wind_state: WIND_STATES.includes(d.wind_state) ? d.wind_state : null, tide: num(d.tide, -10, 10),
+  }));
+  const out = { ...c, day, edited: true, source_label: String(c.source_label || 'Usuario').slice(0, 60) };
+  const curve = Array.isArray(c.tide_curve) ? c.tide_curve.slice(0, 24).map(([t, v]) => [String(t).slice(0, 5), num(v, -10, 10)]) : null;
+  out.tide_curve = curve;
+  const s = JSON.stringify(out);
+  return s.length < 20000 ? s : null;
+}
+
 // ---------- permisos ----------
 // El dueño de un video es el surfista (o quien lo subió, si el surfista no es miembro).
 const ownerOf = (v) => v.surfer_email || v.uploader_email;
@@ -158,6 +190,23 @@ export async function onRequest(context) {
       return json({ avatar_key: key });
     }
 
+    if (path === 'me/metrics' && method === 'GET') {
+      const r = await env.DB.prepare('SELECT * FROM body_metrics WHERE email = ? ORDER BY recorded_on DESC, created_at DESC').bind(me.email).all();
+      return json(r.results);
+    }
+    if (path === 'me/metrics' && method === 'POST') {
+      const b = await request.json();
+      const row = { height_cm: num(b.height_cm, 80, 250, 0), weight_kg: num(b.weight_kg, 20, 250, 1), age: num(b.age, 5, 110, 0) };
+      if (row.height_cm == null && row.weight_kg == null && row.age == null) return err('empty');
+      const day = /^\d{4}-\d{2}-\d{2}$/.test(b.recorded_on || '') ? b.recorded_on : new Date().toISOString().slice(0, 10);
+      await env.DB.prepare('INSERT INTO body_metrics (id, email, recorded_on, height_cm, weight_kg, age) VALUES (?, ?, ?, ?, ?, ?)').bind(uid(), me.email, day, row.height_cm, row.weight_kg, row.age).run();
+      return json({ ok: true });
+    }
+    if ((m = /^me\/metrics\/([a-f0-9]{16})$/.exec(path)) && method === 'DELETE') {
+      await env.DB.prepare('DELETE FROM body_metrics WHERE id = ? AND email = ?').bind(m[1], me.email).run();
+      return json({ ok: true });
+    }
+
     // ================= usuarios (admin) =================
     if (path === 'members' && method === 'POST') {
       if (me.role !== 'admin') return err('forbidden', 403);
@@ -218,12 +267,14 @@ export async function onRequest(context) {
 
     // ================= tablas =================
     if (path === 'boards' && method === 'POST') {
-      const b = await request.json();
+      const b = boardInput(await request.json());
       if (!b.name) return err('name_required');
-      const owner = b.owner_email && (b.owner_email === me.email || me.role === 'admin') ? b.owner_email : me.email;
+      const raw = b._owner;
+      delete b._owner;
+      const owner = raw && (raw === me.email || me.role === 'admin') ? raw : me.email;
       const id = uid();
-      await env.DB.prepare('INSERT INTO boards (id, owner_email, name, details) VALUES (?, ?, ?, ?)')
-        .bind(id, owner, String(b.name).slice(0, 80), b.details ? String(b.details).slice(0, 300) : null).run();
+      const cols = ['id', 'owner_email', ...Object.keys(b)];
+      await env.DB.prepare(`INSERT INTO boards (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).bind(id, owner, ...Object.values(b)).run();
       return json(await env.DB.prepare('SELECT * FROM boards WHERE id = ?').bind(id).first());
     }
     if ((m = /^boards\/([a-f0-9]{16})(\/photo)?$/.exec(path))) {
@@ -237,10 +288,13 @@ export async function onRequest(context) {
         return json({ photo_key: key });
       }
       if (!m[2] && method === 'PATCH') {
-        const b = await request.json();
-        await env.DB.prepare('UPDATE boards SET name = COALESCE(?, name), details = COALESCE(?, details), active = COALESCE(?, active) WHERE id = ?')
-          .bind(b.name ?? null, b.details ?? null, b.active ?? null, board.id).run();
-        return json({ ok: true });
+        const raw = await request.json();
+        const b = boardInput(raw, true);
+        delete b._owner;
+        if ('active' in raw) b.active = raw.active ? 1 : 0;
+        const keys = Object.keys(b);
+        if (keys.length) await env.DB.prepare(`UPDATE boards SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).bind(...Object.values(b), board.id).run();
+        return json(await env.DB.prepare('SELECT * FROM boards WHERE id = ?').bind(board.id).first());
       }
     }
 
@@ -271,7 +325,9 @@ export async function onRequest(context) {
       if (raw.note && String(raw.note).trim()) {
         await env.DB.prepare("INSERT INTO comments (id, video_id, author_email, kind, body) VALUES (?, ?, ?, 'note', ?)").bind(uid(), id, me.email, String(raw.note).trim().slice(0, 2000)).run();
       }
-      await refreshConditions(env, id);
+      const edited = cleanConditions(raw.conditions);
+      if (edited) await env.DB.prepare('UPDATE videos SET conditions = ? WHERE id = ?').bind(edited, id).run();
+      else await refreshConditions(env, id);
       return json({ id, keys: { original: `videos/${id}/original.${ext}`, poster: `videos/${id}/poster.jpg` } });
     }
 
@@ -317,7 +373,12 @@ export async function onRequest(context) {
         for (const k of ['original_key', 'preview_key', 'poster_key']) if (raw[k] && String(raw[k]).startsWith(`videos/${id}/`)) b[k] = raw[k];
         const keys = Object.keys(b);
         if (keys.length) await env.DB.prepare(`UPDATE videos SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).bind(...Object.values(b), id).run();
-        if ('spot_id' in b || 'recorded_at' in b || raw.refresh_conditions) await refreshConditions(env, id);
+        const edited = cleanConditions(raw.conditions);
+        if (edited) {
+          const cur = await env.DB.prepare('SELECT spot_id, recorded_at FROM videos WHERE id = ?').bind(id).first();
+          await env.DB.prepare(`UPDATE videos SET conditions = ? WHERE id = ? OR (spot_id = ? AND substr(recorded_at, 1, 10) = ? AND (uploader_email = ? OR surfer_email = ?))`)
+            .bind(edited, id, cur.spot_id, (cur.recorded_at || '').slice(0, 10), me.email, me.email).run();
+        } else if ('spot_id' in b || 'recorded_at' in b || raw.refresh_conditions) await refreshConditions(env, id);
         return json({ ok: true });
       }
       if (!m[2] && method === 'DELETE') {

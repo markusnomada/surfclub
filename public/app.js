@@ -238,11 +238,39 @@ function conditionsPanel(c) {
     c.tide_day_min != null ? h('div', { class: 'muted small' }, `${t('tide_range')}: ${c.tide_day_min} → ${c.tide_day_max} m`) : null,
     tideCurve(c),
     c.sea_temp != null ? row(t('sea_temp'), `${c.sea_temp} °C`) : null,
-    h('p', { class: 'muted small' }, t('tide_note')));
+    h('p', { class: 'muted small' }, c.edited ? t('fc_edited').replace('{s}', c.source_label) + ' ' : '', t('tide_note')));
 }
 function condLine(c) {
   if (!c || c.swell_height == null) return '';
   return `${t('swell')} ${c.swell_height} m · ${c.swell_period}s ${compass(c.swell_direction)} — ${t('wind')} ${c.wind_speed ?? '–'} km/h ${compass(c.wind_direction)} — ${t('tide')} ${c.tide_height ?? '–'} m ${c.tide_trend ? t(c.tide_trend) : ''}`;
+}
+
+// ================= tablas: ficha técnica =================
+const CONSTRUCTIONS = ['PU', 'Epoxy (EPS)', 'PE', 'Soft top', 'Carbono', 'Madera'];
+function boardSpecs(b) {
+  const dims = [b.length, b.width, b.thickness].filter(Boolean).join(' × ');
+  return [dims, b.volume ? `${b.volume} L` : null, b.construction].filter(Boolean).join(' · ');
+}
+function boardForm(init = {}, onSave, onCancel) {
+  const v = { brand: init.brand || '', model: init.model || '', length: init.length || '', width: init.width || '', thickness: init.thickness || '', volume: init.volume ?? '', construction: init.construction || '', details: init.details || '', name: init.name || '' };
+  const inp = (k, ph, type = 'text', extra = {}) => h('label', { class: 'field' }, h('span', {}, t('b_' + k)), h('input', { type, value: v[k], placeholder: ph, oninput: (e) => (v[k] = e.target.value), ...extra }));
+  const consList = h('datalist', { id: 'cons-list' }, CONSTRUCTIONS.map((c) => h('option', { value: c })));
+  const msg = h('p', { class: 'small err' });
+  return h('form', { class: 'board-form', onsubmit: async (e) => {
+    e.preventDefault();
+    if (![v.name, v.brand, v.model, v.length].some((x) => String(x).trim())) { msg.textContent = t('b_need_one'); return; }
+    if (!init.id) v.name = ''; // en tablas nuevas el nombre se arma con marca, modelo y largo
+    await onSave(v);
+  } },
+    h('div', { class: 'bf-grid' },
+      inp('brand', 'Pyzel'), inp('model', 'Ghost'),
+      inp('length', `5'10"`), inp('width', '19 1/4"'), inp('thickness', '2 3/8"'),
+      inp('volume', '30', 'number', { step: 0.1, min: 0 }),
+      h('label', { class: 'field' }, h('span', {}, t('b_construction')), h('input', { type: 'text', list: 'cons-list', value: v.construction, placeholder: 'PU, Epoxy…', oninput: (e) => (v.construction = e.target.value) }), consList),
+      init.id ? inp('name', '') : null),
+    inp('details', t('b_details_ph')),
+    msg,
+    h('div', { class: 'actions' }, h('button', { class: 'btn small' }, t('save')), onCancel ? h('button', { type: 'button', class: 'link-btn', onclick: onCancel }, t('cancel')) : null));
 }
 
 // ================= selectores: pico y tabla =================
@@ -279,18 +307,16 @@ function boardPicker(getOwner, value, onChange) {
   const draw = () => {
     const mine = S.boards.filter((b) => b.owner_email === getOwner());
     if (value && !mine.some((b) => b.id === value)) { value = ''; onChange(null); }
-    const name = h('input', { type: 'text', placeholder: t('board_name') });
     box.replaceChildren(
       h('div', { class: 'chips' },
         h('button', { type: 'button', class: 'chip' + (!value ? ' on' : ''), onclick: () => { value = ''; onChange(null); draw(); } }, t('no_board')),
-        mine.map((b) => h('button', { type: 'button', class: 'chip board-chip' + (value === b.id ? ' on' : ''), onclick: () => { value = b.id; onChange(b.id); draw(); } },
+        mine.map((b) => h('button', { type: 'button', class: 'chip board-chip' + (value === b.id ? ' on' : ''), title: boardSpecs(b), onclick: () => { value = b.id; onChange(b.id); draw(); } },
           b.photo_key ? h('img', { src: media(b.photo_key), alt: '' }) : null, b.name)),
         h('button', { type: 'button', class: 'chip add', onclick: () => { adding = !adding; draw(); } }, '+ ', t('new_board'))),
-      adding ? h('div', { class: 'inline-add' }, name, h('button', { type: 'button', class: 'btn small', onclick: async () => {
-        if (!name.value.trim()) return;
-        const b = await api('boards', { method: 'POST', body: { name: name.value, owner_email: getOwner() } });
+      adding ? h('div', { class: 'card inset' }, boardForm({}, async (vals) => {
+        const b = await api('boards', { method: 'POST', body: { ...vals, owner_email: getOwner() } });
         S.boards.push(b); value = b.id; adding = false; onChange(b.id); draw();
-      } }, t('add'))) : null);
+      }, () => { adding = false; draw(); })) : null);
   };
   box.redraw = draw;
   draw();
@@ -302,41 +328,75 @@ function defaultSpot() {
   return [...S.favSpots][0] || S.spots[0]?.id || null;
 }
 
-// ================= forecast del día (tabla tipo surf forecast) =================
+// ================= forecast del día (tabla tipo surf forecast, editable) =================
 const WS = { onshore: 'ws_on', 'cross-on': 'ws_crosson', cross: 'ws_cross', 'cross-off': 'ws_crossoff', offshore: 'ws_off' };
+const COMPASS16 = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSO', 'SO', 'OSO', 'O', 'ONO', 'NO', 'NNO'];
 const windBg = (k) => (k == null ? 'transparent' : k < 10 ? '#cfeed6' : k < 20 ? '#e8f2b0' : k < 30 ? '#f7dc95' : k < 40 ? '#f4b385' : '#ec8f80');
 const waveBg = (m) => (m == null ? 'transparent' : `rgba(42,127,140,${Math.min(0.85, 0.12 + m * 0.32).toFixed(2)})`);
 const isPipa = (spotId) => { const s = S.spots.find((x) => x.id === spotId); return s && Math.abs(s.lat + 6.22) < 0.15 && Math.abs(s.lon + 35.04) < 0.15; };
+const f1 = (v) => (v != null ? Number(v).toFixed(1) : '–');
 
-function forecastTable(c, atTime, spotId) {
-  if (!c?.day?.length) return h('p', { class: 'muted small' }, t('no_conditions'));
-  const hh = atTime ? parseInt(atTime.slice(0, 2), 10) + parseInt(atTime.slice(3, 5), 10) / 60 : null;
-  const hi = hh == null ? -1 : Math.min(7, Math.floor(hh / 3)); // franja de 3 h que contiene la hora
-  const td = (i, ...k) => h('td', { class: i === hi ? 'now' : '' }, ...k);
-  const curve = c.tide_curve?.length ? (() => {
-    const vals = c.tide_curve.map(([, v]) => v).filter((v) => v != null);
-    const lo = Math.min(...vals), hi2 = Math.max(...vals), W = 800, H = 46;
-    const d = c.tide_curve.map(([, v], i) => `${i ? 'L' : 'M'}${((i + 0.5) / 24 * W).toFixed(1)},${(H - 4 - ((v ?? lo) - lo) / Math.max(0.01, hi2 - lo) * (H - 8)).toFixed(1)}`).join(' ');
-    const x = hh == null ? null : ((hh + 0.5) / 24) * W;
-    return h('div', { html: `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="fc-tide"><path d="${d} L${W},${H} L0,${H} Z" class="area"/><path d="${d}" class="line"/>${x != null ? `<line x1="${x}" x2="${x}" y1="0" y2="${H}"/>` : ''}</svg>` });
-  })() : null;
-  return h('div', { class: 'fc' },
-    h('div', { class: 'fc-scroll' }, h('table', { class: 'fc-table' },
-      h('thead', {}, h('tr', {}, h('th', {}, ''), c.day.map((d, i) => h('th', { class: i === hi ? 'now' : '' }, `${String(d.h).padStart(2, '0')}h`)))),
-      h('tbody', {},
-        h('tr', {}, h('th', {}, t('waves'), h('small', {}, 'm')), c.day.map((d, i) => td(i, h('span', { class: 'cell', style: `background:${waveBg(d.wave)};color:${d.wave > 1.2 ? '#fff' : 'inherit'}` }, d.wave != null ? d.wave.toFixed(1) : '–')))),
-        h('tr', {}, h('th', {}, t('swell'), h('small', {}, 'm · s')), c.day.map((d, i) => td(i, h('div', { class: 'stack' }, arrow(d.swell_dir), h('b', {}, d.swell != null ? d.swell.toFixed(1) : '–'), h('small', {}, d.period != null ? d.period + 's' : ''))))),
-        h('tr', {}, h('th', {}, t('wind'), h('small', {}, 'km/h')), c.day.map((d, i) => td(i, h('span', { class: 'cell', style: `background:${windBg(d.wind)}` }, arrow(d.wind_dir), ' ', d.wind ?? '–')))),
-        h('tr', {}, h('th', {}, t('wind_state')), c.day.map((d, i) => td(i, h('small', { class: 'ws ws-' + (d.wind_state || '') }, d.wind_state ? t(WS[d.wind_state]) : '–')))),
-        h('tr', {}, h('th', {}, t('tide'), h('small', {}, 'm')), h('td', { colspan: 8, class: 'tide-cell' }, curve))))),
-    h('p', { class: 'fc-source' }, t('fc_source'), ' ',
-      isPipa(spotId) ? h('a', { href: 'https://www.surf-forecast.com/breaks/Praia-de-Pipa/forecasts/latest', target: '_blank', rel: 'noopener' }, t('fc_compare'), ' ↗') : null));
+// recalcula el resumen de la hora de la sesión a partir de la franja editada
+function applySlot(c, atTime) {
+  if (!c?.day?.length || !atTime) return c;
+  const d = c.day[Math.min(c.day.length - 1, Math.floor(parseInt(atTime.slice(0, 2), 10) / 3))];
+  return { ...c, wave_height: d.wave, swell_height: d.swell, swell_period: d.period, swell_direction: d.swell_dir, wind_speed: d.wind, wind_gusts: d.gust ?? c.wind_gusts, wind_direction: d.wind_dir, wind_state: d.wind_state };
+}
+
+function forecastTable(c, atTime, spotId, opts = {}) {
+  const box = h('div', { class: 'fc' });
+  let editing = false;
+  const draw = () => {
+    if (!c?.day?.length) { box.replaceChildren(h('p', { class: 'muted small' }, t('no_conditions'))); return; }
+    const hh = atTime ? parseInt(atTime.slice(0, 2), 10) + parseInt(atTime.slice(3, 5), 10) / 60 : null;
+    const hi = hh == null ? -1 : Math.min(7, Math.floor(hh / 3)); // franja de 3 h que contiene la hora
+    const draft = editing ? c.day.map((d) => ({ ...d })) : null;
+    const srcIn = h('input', { type: 'text', value: c.edited ? c.source_label : 'Surf-Forecast', class: 'fc-src-in' });
+    const td = (i, ...k) => h('td', { class: i === hi ? 'now' : '' }, ...k);
+    const numIn = (i, k, step) => h('input', { type: 'number', step, min: 0, value: draft[i][k] ?? '', class: 'fc-in', oninput: (e) => (draft[i][k] = e.target.value === '' ? null : Number(e.target.value)) });
+    const dirIn = (i, k) => h('select', { class: 'fc-in', onchange: (e) => (draft[i][k] = e.target.value === '' ? null : Number(e.target.value)) },
+      h('option', { value: '' }, '–'), COMPASS16.map((n, j) => h('option', { value: j * 22.5, selected: draft[i][k] != null && Math.round(((draft[i][k] % 360) / 22.5)) % 16 === j }, n)));
+    const stateIn = (i) => h('select', { class: 'fc-in', onchange: (e) => (draft[i].wind_state = e.target.value || null) },
+      h('option', { value: '' }, '–'), Object.keys(WS).map((k) => h('option', { value: k, selected: draft[i].wind_state === k }, t(WS[k]))));
+    const curve = c.tide_curve?.length ? (() => {
+      const vals = c.tide_curve.map(([, v]) => v).filter((v) => v != null);
+      const lo = Math.min(...vals), hi2 = Math.max(...vals), W = 800, H = 46;
+      const d = c.tide_curve.map(([, v], i) => `${i ? 'L' : 'M'}${((i + 0.5) / 24 * W).toFixed(1)},${(H - 4 - ((v ?? lo) - lo) / Math.max(0.01, hi2 - lo) * (H - 8)).toFixed(1)}`).join(' ');
+      const x = hh == null ? null : ((hh + 0.5) / 24) * W;
+      return h('div', { html: `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="fc-tide"><path d="${d} L${W},${H} L0,${H} Z" class="area"/><path d="${d}" class="line"/>${x != null ? `<line x1="${x}" x2="${x}" y1="0" y2="${H}"/>` : ''}</svg>` });
+    })() : null;
+    box.replaceChildren(
+      h('div', { class: 'fc-scroll' }, h('table', { class: 'fc-table' + (editing ? ' editing' : '') },
+        h('thead', {}, h('tr', {}, h('th', {}, ''), c.day.map((d, i) => h('th', { class: i === hi ? 'now' : '' }, `${String(d.h).padStart(2, '0')}h`)))),
+        h('tbody', {},
+          h('tr', {}, h('th', {}, t('waves'), h('small', {}, 'm')), c.day.map((d, i) => td(i, editing ? numIn(i, 'wave', 0.1)
+            : h('span', { class: 'cell', style: `background:${waveBg(d.wave)};color:${d.wave > 1.2 ? '#fff' : 'inherit'}` }, f1(d.wave))))),
+          h('tr', {}, h('th', {}, t('swell'), h('small', {}, 'm · s')), c.day.map((d, i) => td(i, editing ? h('div', { class: 'stack' }, numIn(i, 'swell', 0.1), numIn(i, 'period', 1), dirIn(i, 'swell_dir'))
+            : h('div', { class: 'stack' }, arrow(d.swell_dir), h('b', {}, f1(d.swell)), h('small', {}, d.period != null ? d.period + 's' : ''))))),
+          h('tr', {}, h('th', {}, t('wind'), h('small', {}, 'km/h')), c.day.map((d, i) => td(i, editing ? h('div', { class: 'stack' }, numIn(i, 'wind', 1), dirIn(i, 'wind_dir'))
+            : h('span', { class: 'cell', style: `background:${windBg(d.wind)}` }, arrow(d.wind_dir), ' ', d.wind ?? '–')))),
+          h('tr', {}, h('th', {}, t('wind_state')), c.day.map((d, i) => td(i, editing ? stateIn(i) : h('small', { class: 'ws ws-' + (d.wind_state || '') }, d.wind_state ? t(WS[d.wind_state]) : '–')))),
+          h('tr', {}, h('th', {}, t('tide'), h('small', {}, 'm')), h('td', { colspan: 8, class: 'tide-cell' }, curve))))),
+      editing
+        ? h('div', { class: 'fc-edit-bar' }, h('label', { class: 'small' }, t('fc_source_label'), ' ', srcIn),
+            h('button', { class: 'btn small', onclick: async () => {
+              const next = applySlot({ ...c, day: draft, edited: true, source_label: srcIn.value.trim() || 'Usuario' }, atTime);
+              await opts.onSave(next); c = next; editing = false; draw();
+            } }, t('save')),
+            h('button', { class: 'link-btn', onclick: () => { editing = false; draw(); } }, t('cancel')))
+        : h('p', { class: 'fc-source' },
+            c.edited ? h('span', { class: 'edited-badge' }, t('fc_edited').replace('{s}', c.source_label)) : t('fc_source'), ' ',
+            isPipa(spotId) ? h('a', { href: 'https://www.surf-forecast.com/breaks/Praia-de-Pipa/forecasts/latest', target: '_blank', rel: 'noopener' }, t('fc_compare'), ' ↗') : null,
+            opts.onSave ? h('button', { class: 'link-btn fc-edit-btn', onclick: () => { editing = true; draw(); } }, '✎ ', t('fc_edit')) : null));
+  };
+  draw();
+  return box;
 }
 
 // ================= subir: una sesión = un día =================
 function viewUpload() {
   const root = $app();
-  const shared = { surfer_email: S.me.email, surfer_name: '', spot_id: defaultSpot(), board_id: store.get('sc_last_board', null), date: '', time: '' };
+  const shared = { surfer_email: S.me.email, surfer_name: '', spot_id: defaultSpot(), board_id: store.get('sc_last_board', null), date: '', time: '', conditions: null };
   const items = [];
   const list = h('div', { class: 'queue' });
   const status = h('div', { class: 'status muted' });
@@ -366,7 +426,11 @@ function viewUpload() {
     if (!at || !shared.spot_id) { fcBox.replaceChildren(h('p', { class: 'muted small' }, t('fc_need_date'))); return; }
     const key = shared.spot_id + at; if (key === fcKey) return; fcKey = key;
     fcBox.replaceChildren(h('p', { class: 'muted small' }, h('span', { class: 'spinner' }), ' ', t('fc_loading')));
-    try { const c = await api(`conditions?spot=${shared.spot_id}&at=${at}`); if (fcKey === key) fcBox.replaceChildren(h('h3', {}, t('fc_title')), forecastTable(c, shared.time, shared.spot_id)); }
+    shared.conditions = null;
+    try {
+      const c = await api(`conditions?spot=${shared.spot_id}&at=${at}`);
+      if (fcKey === key) fcBox.replaceChildren(h('h3', {}, t('fc_title')), forecastTable(c, shared.time, shared.spot_id, { onSave: (next) => { shared.conditions = next; } }));
+    }
     catch { fcBox.replaceChildren(h('p', { class: 'muted small' }, '–')); }
   }
 
@@ -470,7 +534,7 @@ function viewUpload() {
     it.status = 'uploading'; it.progress = 0; it.draw();
     const ext = (it.file.name.split('.').pop() || 'mp4').toLowerCase();
     const body = { surfer_email: shared.surfer_email || null, surfer_name: shared.surfer_email ? null : shared.surfer_name, spot_id: shared.spot_id, board_id: shared.board_id || null,
-      recorded_at: recordedAt(it), wave_rating: it.wave_rating, surf_rating: it.surf_rating, note: it.note,
+      recorded_at: recordedAt(it), conditions: shared.conditions ? applySlot(shared.conditions, videoTime(it)) : undefined, wave_rating: it.wave_rating, surf_rating: it.surf_rating, note: it.note,
       ...(it.meta || {}), subject_ratio: it.ratio ?? null, flags: it.flags, highlight_at: it.highlight };
     const res = await fetch('/api/videos', { method: 'POST', headers: { 'content-type': 'application/json', 'x-ext': ext }, body: JSON.stringify(body) });
     const { id, keys, error } = await res.json(); if (!id) throw new Error(error || res.status);
@@ -611,7 +675,8 @@ async function viewDetail(id) {
   const renderSide = () => side.replaceChildren(
     h('div', { class: 'surfer-head' }, avatar({ name: surferName(v), avatar_key: v.surfer_avatar }, 44), h('div', {}, h('h1', {}, surferName(v)), h('span', { class: 'muted' }, fmtDate(v.recorded_at)))),
     h('div', { class: 'kv' }, h('span', {}, t('spot')), h('b', {}, v.spot_name || '–')),
-    h('div', { class: 'kv' }, h('span', {}, t('board')), h('b', { class: 'board-val' }, v.board_photo ? h('img', { src: media(v.board_photo), alt: '' }) : null, v.board_name || t('no_board'))),
+    h('div', { class: 'kv' }, h('span', {}, t('board')), h('b', { class: 'board-val', title: (() => { const bb = S.boards.find((x) => x.id === v.board_id); return bb ? boardSpecs(bb) : ''; })() }, v.board_photo ? h('img', { src: media(v.board_photo), alt: '' }) : null, v.board_name || t('no_board'))),
+    (() => { const bb = S.boards.find((x) => x.id === v.board_id); const sp = bb && boardSpecs(bb); return sp ? h('div', { class: 'muted small board-specs' }, sp) : null; })(),
     h('div', { class: 'kv' }, h('span', {}, t('wave')), stars(v.wave_rating, 'big')),
     h('div', { class: 'kv' }, h('span', {}, t('surf')), stars(v.surf_rating, 'big')),
     (v.flags || []).length ? h('div', { class: 'flags-help' }, flagChips(v.flags, true)) : null,
@@ -638,7 +703,7 @@ async function viewDetail(id) {
   root.replaceChildren(nav(''), h('main', { class: 'wrap detail' },
     h('a', { href: '#/', class: 'back' }, '← ', t('back')),
     h('div', { class: 'dgrid' }, h('div', {}, player, likeBox,
-      v.conditions?.day ? h('details', { class: 'fc-details' }, h('summary', {}, t('fc_title'), ' · ', h('span', { class: 'muted small' }, condLine(v.conditions))), forecastTable(v.conditions, (v.recorded_at || '').slice(11, 16), v.spot_id)) : null,
+      v.conditions?.day ? h('details', { class: 'fc-details' }, h('summary', {}, t('fc_title'), ' · ', h('span', { class: 'muted small' }, condLine(v.conditions))), forecastTable(v.conditions, (v.recorded_at || '').slice(11, 16), v.spot_id, v.can_edit ? { onSave: async (next) => { await api('videos/' + v.id, { method: 'PATCH', body: { conditions: next } }); v.conditions = next; S.videos = null; renderSide(); } } : {})) : null,
       boardEl, commentsEl), side)));
 }
 
@@ -691,18 +756,41 @@ function viewProfile() {
     [['es', 'Español'], ['en', 'English'], ['pt', 'Português']].map(([k, n]) => h('option', { value: k, selected: getLang() === k }, n)));
   const newPw = h('input', { type: 'password', placeholder: t('new_password'), autocomplete: 'new-password' });
 
-  // tablas con foto
+  // tablas con foto y ficha técnica
   const myBoards = S.boards.filter((b) => b.owner_email === S.me.email);
-  const bName = h('input', { type: 'text', placeholder: t('board_name') });
-  const bDet = h('input', { type: 'text', placeholder: t('board_details') });
-  const boardCard = (b) => {
-    const pic = filePick(async (f) => { const r = await api(`boards/${b.id}/photo`, { method: 'PUT', raw: await resizeImage(f, 900, false) }); b.photo_key = r.photo_key; viewProfile(); });
-    return h('div', { class: 'board-card' },
-      h('button', { class: 'board-photo', title: t('board_photo'), onclick: () => pic.click() },
-        b.photo_key ? h('img', { src: media(b.photo_key), alt: b.name }) : h('span', { class: 'ph' }, '+', h('small', {}, t('board_photo'))), pic),
-      h('div', { class: 'grow' }, h('strong', {}, b.name), b.details ? h('div', { class: 'muted small' }, b.details) : null),
-      h('button', { class: 'icon-btn', title: t('remove'), onclick: async () => { await api('boards/' + b.id, { method: 'PATCH', body: { active: 0 } }); S.boards = S.boards.filter((x) => x.id !== b.id); viewProfile(); } }, '✕'));
+  let addingBoard = false, editingBoard = null;
+  const boardsBox = h('div', {});
+  const drawBoards = () => boardsBox.replaceChildren(
+    myBoards.length ? h('div', { class: 'boards' }, myBoards.map((b) => {
+      if (editingBoard === b.id) return h('div', { class: 'card inset' }, boardForm(b, async (vals) => { Object.assign(b, await api('boards/' + b.id, { method: 'PATCH', body: vals })); editingBoard = null; drawBoards(); }, () => { editingBoard = null; drawBoards(); }));
+      const pic = filePick(async (f) => { const r = await api(`boards/${b.id}/photo`, { method: 'PUT', raw: await resizeImage(f, 900, false) }); b.photo_key = r.photo_key; drawBoards(); });
+      return h('div', { class: 'board-card' },
+        h('button', { class: 'board-photo', title: t('board_photo'), onclick: () => pic.click() },
+          b.photo_key ? h('img', { src: media(b.photo_key), alt: b.name }) : h('span', { class: 'ph' }, '+', h('small', {}, t('board_photo'))), pic),
+        h('div', { class: 'grow' }, h('strong', {}, b.name), h('div', { class: 'muted small' }, boardSpecs(b) || t('b_no_specs')), b.details ? h('div', { class: 'muted small' }, b.details) : null),
+        h('button', { class: 'icon-btn', title: t('edit'), onclick: () => { editingBoard = b.id; drawBoards(); } }, '✎'),
+        h('button', { class: 'icon-btn', title: t('remove'), onclick: async () => { await api('boards/' + b.id, { method: 'PATCH', body: { active: 0 } }); S.boards = S.boards.filter((x) => x.id !== b.id); viewProfile(); } }, '✕'));
+    })) : h('p', { class: 'muted small' }, t('no_boards')),
+    addingBoard ? h('div', { class: 'card inset' }, boardForm({}, async (vals) => { const nb = await api('boards', { method: 'POST', body: vals }); S.boards.push(nb); myBoards.push(nb); addingBoard = false; drawBoards(); }, () => { addingBoard = false; drawBoards(); }))
+      : h('button', { class: 'chip add', onclick: () => { addingBoard = true; drawBoards(); } }, '+ ', t('new_board')));
+  drawBoards();
+
+  // datos del surfista (historial con fecha, privado)
+  const metricsBox = h('div', {});
+  const mv = { recorded_on: localIso(new Date()).slice(0, 10), height_cm: '', weight_kg: '', age: '' };
+  const drawMetrics = async () => {
+    const rows = await api('me/metrics');
+    const mIn = (k, ph, step) => h('label', { class: 'field' }, h('span', {}, t('m_' + k)), h('input', { type: k === 'recorded_on' ? 'date' : 'number', step, value: mv[k], placeholder: ph, oninput: (e) => (mv[k] = e.target.value) }));
+    metricsBox.replaceChildren(
+      h('form', { class: 'metrics-form', onsubmit: async (e) => { e.preventDefault(); try { await api('me/metrics', { method: 'POST', body: mv }); mv.height_cm = mv.weight_kg = mv.age = ''; drawMetrics(); } catch {} } },
+        mIn('recorded_on'), mIn('height_cm', '178', 1), mIn('weight_kg', '75', 0.1), mIn('age', '38', 1), h('button', { class: 'btn small' }, t('add'))),
+      rows.length ? h('table', { class: 'metrics' },
+        h('thead', {}, h('tr', {}, h('th', {}, t('m_recorded_on')), h('th', {}, t('m_height_cm')), h('th', {}, t('m_weight_kg')), h('th', {}, t('m_age')), h('th', {}))),
+        h('tbody', {}, rows.map((r) => h('tr', {}, h('td', {}, fmtDate(r.recorded_on + 'T12:00', { dateStyle: 'medium' })), h('td', {}, r.height_cm ?? '–'), h('td', {}, r.weight_kg ?? '–'), h('td', {}, r.age ?? '–'),
+          h('td', {}, h('button', { class: 'icon-btn', title: t('delete'), onclick: async () => { await api('me/metrics/' + r.id, { method: 'DELETE' }); drawMetrics(); } }, '✕'))))))
+        : h('p', { class: 'muted small' }, t('m_none')));
   };
+  drawMetrics();
 
   // picos favoritos
   const spotChip = (s) => h('button', { class: 'chip' + (S.favSpots.has(s.id) ? ' on' : ''), onclick: async () => {
@@ -736,10 +824,9 @@ function viewProfile() {
           nameIn, h('button', { class: 'btn small' }, t('save'))),
         h('p', { class: 'muted small' }, '@', S.me.username), msg)),
 
-    h('section', { class: 'card' }, h('h3', {}, t('my_boards')),
-      myBoards.length ? h('div', { class: 'boards' }, myBoards.map(boardCard)) : h('p', { class: 'muted small' }, t('no_boards')),
-      h('form', { class: 'inline', onsubmit: async (e) => { e.preventDefault(); if (!bName.value.trim()) return; S.boards.push(await api('boards', { method: 'POST', body: { name: bName.value, details: bDet.value } })); viewProfile(); } },
-        bName, bDet, h('button', { class: 'btn small' }, t('add')))),
+    h('section', { class: 'card' }, h('h3', {}, t('my_boards')), boardsBox),
+
+    h('section', { class: 'card' }, h('h3', {}, t('my_body')), h('p', { class: 'small muted' }, t('my_body_help')), metricsBox),
 
     h('section', { class: 'card' }, h('h3', {}, t('my_spots')), h('p', { class: 'small muted' }, t('my_spots_help')),
       h('div', { class: 'chips' }, S.spots.map(spotChip)),
