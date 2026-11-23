@@ -1,10 +1,16 @@
 import { t, setLang, getLang } from './i18n.js';
-import { readMp4CreationTime, loadVideo, detectSubject, computeFlags, makePreview, uploadMultipart } from './media.js';
+import { loadVideo, detectSubject, computeFlags, makePreview, uploadMultipart, detectRecordedAt, resizeImage } from './media.js';
 
-// ---------------- estado y API ----------------
-const S = { me: null, members: [], spots: [], boards: [], videos: null, filters: { surfer: '' }, board: { group: 'session', zoom: 220 } };
-try { Object.assign(S.board, JSON.parse(localStorage.getItem('sc_board') || '{}')); } catch {}
-const saveBoardPrefs = () => { try { localStorage.setItem('sc_board', JSON.stringify(S.board)); } catch {} };
+// ================= estado y API =================
+const S = {
+  me: null, members: [], spots: [], favSpots: new Set(), boards: [], myGrants: new Map(), grantsToMe: new Map(),
+  videos: null, filters: { surfer: '' }, board: { group: 'session', zoom: 220 },
+};
+const store = {
+  get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+Object.assign(S.board, store.get('sc_board', {}));
 
 async function api(path, { method = 'GET', body, raw } = {}) {
   const opts = { method, headers: {}, credentials: 'same-origin' };
@@ -17,12 +23,22 @@ async function api(path, { method = 'GET', body, raw } = {}) {
 }
 const media = (key) => (key ? '/api/media/' + key : '');
 
-// ---------------- helpers de DOM ----------------
+async function boot() {
+  const d = await api('me');
+  Object.assign(S, {
+    me: d.me, members: d.members, spots: d.spots, favSpots: new Set(d.favorite_spots), boards: d.boards,
+    myGrants: new Map(d.my_grants.map((g) => [g.friend_email, g])), grantsToMe: new Map(d.grants_to_me.map((g) => [g.owner_email, g])),
+  });
+  setLang(d.me.lang || 'es');
+}
+
+// ================= DOM =================
 function h(tag, attrs = {}, ...kids) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v == null || v === false) continue;
     if (k === 'class') el.className = v;
+    else if (k === 'style') el.setAttribute('style', v);
     else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
     else if (k === 'html') el.innerHTML = v;
     else if (k in el && typeof v !== 'string') el[k] = v;
@@ -31,60 +47,87 @@ function h(tag, attrs = {}, ...kids) {
   for (const kid of kids.flat(Infinity)) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
   return el;
 }
-// replaceChildren que ignora null/false (permite condicionales inline)
 const _rc = Element.prototype.replaceChildren;
 Element.prototype.replaceChildren = function (...k) { return _rc.apply(this, k.flat(Infinity).filter((x) => x != null && x !== false)); };
 const $app = () => document.getElementById('app');
-const stars = (n) => (n == null ? '–' : '★'.repeat(n) + '☆'.repeat(5 - n));
-const memberName = (email) => S.members.find((m) => m.email === email)?.name || email || '';
-const surferName = (v) => v.surfer_member_name || v.surfer_name || memberName(v.surfer_email);
+
+const memberBy = (email) => S.members.find((m) => m.email === email);
+const surferName = (v) => v.surfer_member_name || v.surfer_name || memberBy(v.uploader_email)?.name || '';
+const LOCALE = () => ({ es: 'es', en: 'en', pt: 'pt-BR' }[getLang()]);
 function fmtDate(s, opts = { dateStyle: 'medium', timeStyle: 'short' }) {
   if (!s) return '–';
-  const d = new Date(s.length === 16 ? s + ':00' : s);
-  return new Intl.DateTimeFormat({ es: 'es', en: 'en', pt: 'pt-BR' }[getLang()], opts).format(d);
+  return new Intl.DateTimeFormat(LOCALE(), opts).format(new Date(s.length === 16 ? s + ':00' : s));
+}
+function ago(sqlDate) {
+  const d = new Date(sqlDate.replace(' ', 'T') + 'Z');
+  const s = (d - Date.now()) / 1000;
+  const rtf = new Intl.RelativeTimeFormat(LOCALE(), { numeric: 'auto' });
+  for (const [u, n] of [['year', 31536000], ['month', 2592000], ['day', 86400], ['hour', 3600], ['minute', 60]]) if (Math.abs(s) >= n) return rtf.format(Math.round(s / n), u);
+  return rtf.format(0, 'minute');
 }
 const fmtSec = (x) => `${Math.floor(x / 60)}:${String(Math.floor(x % 60)).padStart(2, '0')}`;
-const compass = (deg) => (deg == null ? '' : ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'][Math.round(((deg % 360) / 45)) % 8]);
+const compass = (deg) => (deg == null ? '' : ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'][Math.round((deg % 360) / 45) % 8]);
 const arrow = (deg) => (deg == null ? '' : h('span', { class: 'arrow', style: `transform:rotate(${deg + 180}deg)` }, '↑'));
+const localIso = (d) => { const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; };
 
-// reproduce solo los clips visibles (ahorra batería y datos)
+function avatar(person, size = 32) {
+  const name = person?.name || person?.author_name || '?';
+  const key = person?.avatar_key || person?.author_avatar || person?.surfer_avatar;
+  if (key) return h('img', { class: 'avatar', src: media(key), alt: name, style: `width:${size}px;height:${size}px` });
+  let hue = 0; for (const c of name) hue = (hue * 31 + c.charCodeAt(0)) % 360;
+  const ini = name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+  return h('span', { class: 'avatar ini', style: `width:${size}px;height:${size}px;font-size:${Math.round(size * 0.4)}px;background:hsl(${hue} 45% 42%)`, title: name }, ini);
+}
+
+function stars(n, cls = '') {
+  return h('span', { class: 'stars ' + cls, title: n == null ? '' : `${n}/5` }, [1, 2, 3, 4, 5].map((i) => h('i', { class: n != null && i <= n ? 'on' : '' }, '★')));
+}
+function starInput(value, onChange) {
+  const box = h('span', { class: 'stars input' });
+  const draw = () => box.replaceChildren([1, 2, 3, 4, 5].map((i) => h('button', { type: 'button', class: value != null && i <= value ? 'on' : '', 'aria-label': `${i}/5`,
+    onclick: () => { value = value === i ? null : i; onChange(value); draw(); } }, '★')));
+  draw();
+  return box;
+}
+const flagChips = (flags, help = false) => (flags || []).map((f) => h('span', { class: `chip flag flag-${f}`, title: t(`flag_${f}_help`) }, t(`flag_${f}`), help ? h('small', {}, t(`flag_${f}_help`)) : null));
+
+// reproduce solo los clips visibles
 const io = new IntersectionObserver((entries) => {
   for (const e of entries) { const v = e.target; if (e.isIntersecting) { if (!v.src && v.dataset.src) v.src = v.dataset.src; v.play().catch(() => {}); } else v.pause(); }
 }, { rootMargin: '200px' });
 function loopVideo(v) {
-  const el = h('video', { class: 'loop', muted: true, loop: true, playsInline: true, preload: 'none', poster: media(v.poster_key) });
+  const el = h('video', { class: 'loop', loop: true, playsInline: true, preload: 'none', poster: media(v.poster_key) });
   el.muted = true; el.setAttribute('muted', ''); el.setAttribute('playsinline', '');
   el.dataset.src = media(v.preview_key);
   io.observe(el);
   return el;
 }
 
-function flagChips(flags, withHelp = false) {
-  return (flags || []).map((f) => h('span', { class: `chip flag flag-${f}`, title: t(`flag_${f}_help`) }, t(`flag_${f}`), withHelp ? h('small', {}, t(`flag_${f}_help`)) : null));
-}
-
-// ---------------- navegación ----------------
+// ================= navegación =================
 function nav(active) {
   const link = (hash, key) => h('a', { href: hash, class: active === key ? 'active' : '' }, t(key));
   return h('header', { class: 'top' },
     h('a', { href: '#/', class: 'brand' }, h('span', { class: 'mark' }, '≈'), t('brand')),
-    h('nav', {}, link('#/', 'nav_timeline'), link('#/pizarra', 'nav_board'), link('#/subir', 'nav_upload'), link('#/perfil', 'nav_profile')),
-  );
+    h('nav', {}, link('#/', 'nav_timeline'), link('#/pizarra', 'nav_board'), link('#/subir', 'nav_upload'), link('#/amigos', 'nav_friends')),
+    h('a', { href: '#/perfil', class: 'me-link' + (active === 'nav_profile' ? ' active' : ''), title: t('nav_profile') }, avatar(S.me, 30)));
 }
 
-async function loadVideos(force = false) {
-  if (!S.videos || force) S.videos = await api('videos');
-  return S.videos;
+// surfistas cuyos videos puedo ver: yo + quienes me dieron acceso; favoritos primero
+function visibleSurfers() {
+  const others = S.members.filter((m) => m.email !== S.me.email && S.grantsToMe.get(m.email)?.can_view);
+  others.sort((a, b) => (S.myGrants.get(b.email)?.favorite || 0) - (S.myGrants.get(a.email)?.favorite || 0) || a.name.localeCompare(b.name));
+  return [memberBy(S.me.email) || S.me, ...others];
 }
-
 function surferFilter(onChange) {
-  const opts = [{ email: '', name: t('all_surfers') }, ...S.members];
-  return h('div', { class: 'chips' }, opts.map((m) =>
-    h('button', { class: 'chip' + (S.filters.surfer === m.email ? ' on' : ''), onclick: () => { S.filters.surfer = m.email; onChange(); } }, m.name)));
+  return h('div', { class: 'chips' },
+    h('button', { class: 'chip' + (!S.filters.surfer ? ' on' : ''), onclick: () => { S.filters.surfer = ''; onChange(); } }, t('all_surfers')),
+    visibleSurfers().map((m) => h('button', { class: 'chip person' + (S.filters.surfer === m.email ? ' on' : ''), onclick: () => { S.filters.surfer = m.email; onChange(); } },
+      avatar(m, 20), m.email === S.me.email ? t('me') : m.name, S.myGrants.get(m.email)?.favorite ? h('span', { class: 'fav' }, '★') : null)));
 }
-const filtered = () => (S.videos || []).filter((v) => !S.filters.surfer || v.surfer_email === S.filters.surfer);
+async function loadVideos(force = false) { if (!S.videos || force) S.videos = await api('videos'); return S.videos; }
+const filtered = () => (S.videos || []).filter((v) => !S.filters.surfer || (v.surfer_email || v.uploader_email) === S.filters.surfer);
 
-// ---------------- vista: línea de tiempo ----------------
+// ================= línea de tiempo =================
 function evolutionChart(videos) {
   const pts = videos.filter((v) => v.surf_rating != null && v.recorded_at).sort((a, b) => a.recorded_at.localeCompare(b.recorded_at));
   if (pts.length < 2) return null;
@@ -101,14 +144,26 @@ function evolutionChart(videos) {
 }
 
 function videoCard(v) {
+  const n = (v.n_general || 0);
+  const pi = (v.n_note || 0) + (v.n_rec || 0);
   return h('a', { class: 'vcard', href: `#/v/${v.id}` },
     h('div', { class: 'thumb' }, loopVideo(v), h('div', { class: 'overlay' }, flagChips(v.flags))),
     h('div', { class: 'meta' },
-      h('div', { class: 'row1' }, h('strong', {}, v.title || surferName(v)), h('span', { class: 'muted' }, fmtDate(v.recorded_at, { timeStyle: 'short' }))),
-      h('div', { class: 'row2' },
-        h('span', { title: t('wave') }, t('wave'), ' ', h('b', { class: 'stars' }, stars(v.wave_rating))),
-        h('span', { title: t('surf') }, t('surf'), ' ', h('b', { class: 'stars' }, stars(v.surf_rating)))),
-      h('div', { class: 'row3 muted' }, [v.board_name, v.conditions?.swell_height != null ? `${v.conditions.swell_height} m · ${v.conditions.swell_period}s` : null, (v.n_general + v.n_coach) ? `✎ ${v.n_general + v.n_coach}` : null].filter(Boolean).join(' · '))));
+      h('div', { class: 'row1' }, h('span', { class: 'who' }, avatar({ name: surferName(v), avatar_key: v.surfer_avatar }, 22), h('strong', {}, surferName(v))),
+        h('span', { class: 'muted' }, fmtDate(v.recorded_at, { timeStyle: 'short' }))),
+      h('div', { class: 'row2' }, h('span', {}, t('wave'), ' ', stars(v.wave_rating)), h('span', {}, t('surf'), ' ', stars(v.surf_rating))),
+      h('div', { class: 'row3 muted' },
+        h('span', {}, [v.board_name, v.conditions?.swell_height != null ? `${v.conditions.swell_height} m · ${v.conditions.swell_period}s` : null].filter(Boolean).join(' · ')),
+        h('span', { class: 'counts' },
+          v.n_likes ? h('span', { class: v.liked ? 'liked' : '' }, '♥ ', v.n_likes) : null,
+          n ? h('span', { title: t('comments') }, '❝ ', n) : null,
+          pi ? h('span', { class: 'pi', title: t('notes_title') }, h('i', { class: 'pi-dot' }), pi) : null))));
+}
+
+function dayConditions(list) {
+  const c = list.find((v) => v.conditions && v.conditions.swell_height != null)?.conditions;
+  if (!c) return null;
+  return h('div', { class: 'daycond muted' }, condLine(c));
 }
 
 async function viewTimeline() {
@@ -117,51 +172,39 @@ async function viewTimeline() {
   const render = () => {
     const vids = filtered();
     const groups = new Map();
-    for (const v of vids) {
-      const day = (v.recorded_at || v.created_at).slice(0, 10);
-      if (!groups.has(day)) groups.set(day, []);
-      groups.get(day).push(v);
-    }
-    const main = h('main', { class: 'wrap' },
+    for (const v of vids) { const day = (v.recorded_at || v.created_at).slice(0, 10); if (!groups.has(day)) groups.set(day, []); groups.get(day).push(v); }
+    root.replaceChildren(nav('nav_timeline'), h('main', { class: 'wrap' },
       surferFilter(render),
       S.filters.surfer ? evolutionChart(vids) : null,
-      vids.length ? h('div', { class: 'timeline' }, [...groups].map(([day, list]) =>
-        h('section', { class: 'day' },
-          h('div', { class: 'dot' }),
-          h('h2', {}, h('span', { class: 'cap' }, fmtDate(day + 'T12:00', { dateStyle: 'full' })), h('span', { class: 'muted' }, ' · ', [...new Set(list.map((v) => v.spot_name).filter(Boolean))].join(', '))),
-          dayConditions(list),
-          h('div', { class: 'cards' }, list.map(videoCard))))) : h('div', { class: 'empty card' }, t('empty'), ' ', h('a', { href: '#/subir' }, t('nav_upload'), ' →')));
-    root.replaceChildren(nav('nav_timeline'), main);
+      vids.length ? h('div', { class: 'timeline' }, [...groups].map(([day, list]) => h('section', { class: 'day' },
+        h('div', { class: 'dot' }),
+        h('h2', {}, h('span', { class: 'cap' }, fmtDate(day + 'T12:00', { dateStyle: 'full' })), h('span', { class: 'muted' }, ' · ', [...new Set(list.map((v) => v.spot_name).filter(Boolean))].join(', '))),
+        dayConditions(list),
+        h('div', { class: 'cards' }, list.map(videoCard)))))
+        : h('div', { class: 'empty card' }, t('empty'), ' ', h('a', { href: '#/subir' }, t('nav_upload'), ' →'))));
   };
   render();
 }
 
-function dayConditions(list) {
-  const c = list.find((v) => v.conditions && v.conditions.swell_height != null)?.conditions;
-  if (!c) return null;
-  return h('div', { class: 'daycond muted' },
-    `${t('swell')} ${c.swell_height} m · ${c.swell_period}s ${compass(c.swell_direction)} — ${t('wind')} ${c.wind_speed ?? '–'} km/h ${compass(c.wind_direction)} — ${t('tide')} ${c.tide_height ?? '–'} m ${c.tide_trend ? t(c.tide_trend) : ''}`);
-}
-
-// ---------------- vista: pizarra ----------------
+// ================= pizarra =================
 async function viewBoard() {
   const root = $app(); root.replaceChildren(nav('nav_board'), h('main', { class: 'wrap wide' }, h('p', { class: 'muted' }, t('loading'))));
   await loadVideos();
   const render = () => {
     const vids = filtered();
-    const key = { session: (v) => `${(v.recorded_at || '').slice(0, 10)} · ${v.spot_name || ''}`, spot: (v) => v.spot_name || '–', board: (v) => v.board_name || '–', none: () => '' }[S.board.group];
+    const key = { session: (v) => `${fmtDate((v.recorded_at || '').slice(0, 10) + 'T12:00', { dateStyle: 'medium' })} · ${v.spot_name || ''}`, spot: (v) => v.spot_name || '–', board: (v) => v.board_name || '–', surfer: (v) => surferName(v), none: () => '' }[S.board.group] || (() => '');
     const groups = new Map();
     for (const v of vids) { const k = key(v); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(v); }
-    const zoom = h('input', { type: 'range', min: 120, max: 520, step: 10, value: S.board.zoom, oninput: (e) => { S.board.zoom = +e.target.value; grid.style.setProperty('--z', S.board.zoom + 'px'); saveBoardPrefs(); } });
-    const grp = h('select', { onchange: (e) => { S.board.group = e.target.value; saveBoardPrefs(); render(); } },
-      ['session', 'spot', 'board', 'none'].map((g) => h('option', { value: g, selected: S.board.group === g }, t('g_' + g))));
     const grid = h('div', { class: 'board', style: `--z:${S.board.zoom}px` }, [...groups].map(([k, list]) => [
       k ? h('h3', { class: 'gh' }, k, h('span', { class: 'muted' }, ` · ${list.length} ${t('videos_n')}`)) : null,
-      h('div', { class: 'bgrid' }, list.map((v) => h('a', { class: 'tile', href: `#/v/${v.id}`, title: v.title || '' },
+      h('div', { class: 'bgrid' }, list.map((v) => h('a', { class: 'tile', href: `#/v/${v.id}` },
         loopVideo(v),
-        h('div', { class: 'tile-meta' }, h('span', {}, surferName(v)), h('span', { class: 'stars' }, stars(v.surf_rating))),
+        h('div', { class: 'tile-meta' }, h('span', { class: 'who' }, avatar({ name: surferName(v), avatar_key: v.surfer_avatar }, 18), surferName(v)), stars(v.surf_rating)),
         (v.flags || []).length ? h('div', { class: 'tile-flags' }, flagChips(v.flags)) : null))),
     ]));
+    const zoom = h('input', { type: 'range', min: 120, max: 520, step: 10, value: S.board.zoom, oninput: (e) => { S.board.zoom = +e.target.value; grid.style.setProperty('--z', S.board.zoom + 'px'); store.set('sc_board', S.board); } });
+    const grp = h('select', { onchange: (e) => { S.board.group = e.target.value; store.set('sc_board', S.board); render(); } },
+      ['session', 'spot', 'board', 'surfer', 'none'].map((g) => h('option', { value: g, selected: S.board.group === g }, t('g_' + g))));
     root.replaceChildren(nav('nav_board'), h('main', { class: 'wrap wide' },
       h('div', { class: 'toolbar' }, surferFilter(render), h('label', {}, t('group_by'), ' ', grp), h('label', {}, t('zoom'), ' ', zoom)),
       vids.length ? grid : h('div', { class: 'empty card' }, t('empty'))));
@@ -169,7 +212,7 @@ async function viewBoard() {
   render();
 }
 
-// ---------------- vista: detalle ----------------
+// ================= condiciones =================
 function tideCurve(c) {
   if (!c?.tide_curve?.length) return null;
   const W = 260, H = 70, P = 6;
@@ -182,306 +225,476 @@ function tideCurve(c) {
   const xi = X((hh + mm / 60) * ((c.tide_curve.length - 1) / 23));
   return h('div', { html: `<svg viewBox="0 0 ${W} ${H}" class="tidecurve"><path d="${d}"/><line x1="${xi}" x2="${xi}" y1="0" y2="${H}"/><circle cx="${xi}" cy="${Y(c.tide_height ?? lo)}" r="4"/></svg>` });
 }
-
 function conditionsPanel(c) {
-  if (!c || (c.swell_height == null && c.wind_speed == null)) return h('p', { class: 'muted' }, t('no_conditions'));
+  if (!c || (c.swell_height == null && c.wind_speed == null)) return h('p', { class: 'muted small' }, t('no_conditions'));
   const row = (k, v) => h('div', { class: 'kv' }, h('span', {}, k), h('b', {}, v));
   return h('div', { class: 'cond' },
-    row(t('swell'), h('span', {}, `${c.swell_height ?? '–'} m · ${c.swell_period ?? '–'} s `, arrow(c.swell_direction), ` ${compass(c.swell_direction)} ${c.swell_direction ?? ''}°`)),
+    row(t('swell'), h('span', {}, `${c.swell_height ?? '–'} m · ${c.swell_period ?? '–'} s `, arrow(c.swell_direction), ` ${compass(c.swell_direction)}`)),
     row(t('waves'), `${c.wave_height ?? '–'} m · ${c.wave_period ?? '–'} s`),
     row(t('wind'), h('span', {}, `${c.wind_speed ?? '–'} km/h (${c.wind_gusts ?? '–'}) `, arrow(c.wind_direction), ` ${compass(c.wind_direction)}`)),
     row(t('tide'), `${c.tide_height ?? '–'} m ${c.tide_trend ? '· ' + t(c.tide_trend) : ''}`),
     c.tide_day_min != null ? h('div', { class: 'muted small' }, `${t('tide_range')}: ${c.tide_day_min} → ${c.tide_day_max} m`) : null,
     tideCurve(c),
     c.sea_temp != null ? row(t('sea_temp'), `${c.sea_temp} °C`) : null,
-    h('p', { class: 'muted small' }, t('tide_note'), ' Open-Meteo.'));
+    h('p', { class: 'muted small' }, t('tide_note')));
+}
+function condLine(c) {
+  if (!c || c.swell_height == null) return '';
+  return `${t('swell')} ${c.swell_height} m · ${c.swell_period}s ${compass(c.swell_direction)} — ${t('wind')} ${c.wind_speed ?? '–'} km/h ${compass(c.wind_direction)} — ${t('tide')} ${c.tide_height ?? '–'} m ${c.tide_trend ? t(c.tide_trend) : ''}`;
 }
 
-async function viewDetail(id) {
-  const root = $app(); root.replaceChildren(nav(''), h('main', { class: 'wrap' }, h('p', { class: 'muted' }, t('loading'))));
-  const v = await api('videos/' + id);
-  let tab = 'general';
-  const player = h('video', { class: 'player', controls: true, playsInline: true, preload: 'metadata', poster: media(v.poster_key), src: media(v.original_key) });
-
-  const commentsBox = h('div', { class: 'comments' });
-  const renderComments = () => {
-    const list = v.comments.filter((c) => c.kind === tab);
-    const ta = h('textarea', { rows: 3, placeholder: t(tab === 'coach' ? 'c_placeholder_coach' : 'c_placeholder_general') });
-    const mark = h('input', { type: 'checkbox', checked: tab === 'coach' });
-    commentsBox.replaceChildren(
-      h('div', { class: 'tabs' }, ['general', 'coach'].map((k) => h('button', { class: tab === k ? 'on' : '', onclick: () => { tab = k; renderComments(); } },
-        t(k === 'coach' ? 'c_coach' : 'c_general'), ` (${v.comments.filter((c) => c.kind === k).length})`))),
-      list.length ? h('ul', { class: 'clist' }, list.map((c) => h('li', { class: 'c ' + c.kind },
-        h('div', { class: 'chead' }, h('strong', {}, c.author_name || c.author_email), c.author_role === 'coach' ? h('span', { class: 'chip on' }, 'coach') : null,
-          c.at_seconds != null ? h('button', { class: 'ts', onclick: () => { player.currentTime = c.at_seconds; player.play(); } }, '▶ ' + fmtSec(c.at_seconds)) : null,
-          h('span', { class: 'muted small' }, fmtDate(c.created_at.replace(' ', 'T') + 'Z')),
-          (c.author_email === S.me.email || S.me.role === 'admin') ? h('button', { class: 'link small', onclick: async () => { await api('comments/' + c.id, { method: 'DELETE' }); v.comments = v.comments.filter((x) => x.id !== c.id); renderComments(); } }, t('delete')) : null),
-        h('p', {}, c.body)))) : h('p', { class: 'muted' }, t('no_comments')),
-      h('form', { class: 'cform', onsubmit: async (e) => {
-        e.preventDefault();
-        const body = ta.value.trim(); if (!body) return;
-        const at = mark.checked ? Math.round(player.currentTime * 10) / 10 : null;
-        const { id: cid } = await api(`videos/${v.id}/comments`, { method: 'POST', body: { body, kind: tab, at_seconds: at } });
-        v.comments.push({ id: cid, video_id: v.id, author_email: S.me.email, author_name: S.me.name, author_role: S.me.role, kind: tab, body, at_seconds: at, created_at: new Date().toISOString().slice(0, 19).replace('T', ' ') });
-        renderComments();
-      } }, ta, h('div', { class: 'crow' }, h('label', { class: 'small' }, mark, ' ', t('c_at_time')), h('button', { class: 'btn' }, t('send')))));
+// ================= selectores: pico y tabla =================
+function spotPicker(value, onChange) {
+  const box = h('div', { class: 'picker' });
+  let adding = false;
+  const draw = () => {
+    const favs = S.spots.filter((s) => S.favSpots.has(s.id));
+    const others = S.spots.filter((s) => !S.favSpots.has(s.id));
+    const name = h('input', { type: 'text', placeholder: t('spot_name') });
+    const coords = h('input', { type: 'text', placeholder: t('spot_coords') });
+    const shown = favs.length ? favs : S.spots.slice(0, 4);
+    if (value && !shown.some((s) => s.id === value)) { const cur = S.spots.find((s) => s.id === value); if (cur) shown.push(cur); }
+    box.replaceChildren(
+      h('div', { class: 'chips' },
+        shown.map((s) => h('button', { type: 'button', class: 'chip' + (value === s.id ? ' on' : ''), onclick: () => { value = s.id; onChange(value); draw(); } }, S.favSpots.has(s.id) ? h('span', { class: 'fav' }, '★') : null, s.name)),
+        others.length ? h('select', { class: 'chip-select', onchange: (e) => { if (e.target.value) { value = e.target.value; onChange(value); draw(); } } },
+          h('option', { value: '' }, t('more_spots')), others.map((s) => h('option', { value: s.id }, s.name))) : null,
+        h('button', { type: 'button', class: 'chip add', onclick: () => { adding = !adding; draw(); } }, '+ ', t('new_spot'))),
+      adding ? h('div', { class: 'inline-add' }, name, coords, h('button', { type: 'button', class: 'btn small', onclick: async () => {
+        if (!name.value.trim()) return;
+        const [lat, lon] = coords.value.split(',').map((x) => parseFloat(x));
+        const s = await api('spots', { method: 'POST', body: { name: name.value, lat, lon } });
+        S.spots.push(s); S.favSpots.add(s.id); value = s.id; adding = false; onChange(value); draw();
+      } }, t('add')), h('small', { class: 'muted' }, t('spot_coords_help'))) : null);
   };
-  renderComments();
-
-  const side = h('aside', { class: 'side card' });
-  const renderSide = () => side.replaceChildren(
-    h('h1', {}, v.title || surferName(v)),
-    h('div', { class: 'kv' }, h('span', {}, t('surfer')), h('b', {}, surferName(v))),
-    h('div', { class: 'kv' }, h('span', {}, t('date')), h('b', {}, fmtDate(v.recorded_at))),
-    h('div', { class: 'kv' }, h('span', {}, t('spot')), h('b', {}, v.spot_name || '–')),
-    h('div', { class: 'kv' }, h('span', {}, t('board')), h('b', {}, v.board_name || '–')),
-    h('div', { class: 'kv' }, h('span', {}, t('source')), h('b', {}, t('src_' + (v.source || 'unknown')))),
-    h('div', { class: 'kv' }, h('span', {}, t('wave')), h('b', { class: 'stars' }, stars(v.wave_rating))),
-    h('div', { class: 'kv' }, h('span', {}, t('surf')), h('b', { class: 'stars' }, stars(v.surf_rating))),
-    v.subject_ratio != null ? h('div', { class: 'kv' }, h('span', {}, t('up_size_ratio')), h('b', {}, Math.round(v.subject_ratio * 100) + '%')) : null,
-    (v.flags || []).length ? h('div', { class: 'flags-help' }, flagChips(v.flags, true)) : null,
-    v.notes ? h('p', { class: 'notes' }, v.notes) : null,
-    h('h3', {}, t('conditions')), conditionsPanel(v.conditions),
-    v.can_edit ? h('div', { class: 'actions' },
-      h('button', { class: 'btn ghost', onclick: () => editForm() }, t('edit')),
-      h('button', { class: 'btn danger', onclick: async () => { if (!confirm(t('confirm_delete'))) return; await api('videos/' + v.id, { method: 'DELETE' }); S.videos = null; location.hash = '#/'; } }, t('delete'))) : null);
-
-  const editForm = () => {
-    const f = metaFields({ ...v });
-    side.replaceChildren(h('h3', {}, t('edit')), f.el,
-      h('div', { class: 'actions' },
-        h('button', { class: 'btn', onclick: async () => { await api('videos/' + v.id, { method: 'PATCH', body: f.values() }); S.videos = null; viewDetail(v.id); } }, t('save')),
-        h('button', { class: 'btn ghost', onclick: renderSide }, t('cancel'))));
-  };
-  renderSide();
-
-  root.replaceChildren(nav(''), h('main', { class: 'wrap detail' },
-    h('a', { href: '#/', class: 'back' }, '← ', t('back')),
-    h('div', { class: 'dgrid' }, h('div', {}, player, h('h3', {}, t('comments')), commentsBox), side)));
-}
-
-// ---------------- campos de metadatos (subida y edición) ----------------
-function ratingInput(value, onChange) {
-  const box = h('div', { class: 'rating' });
-  const draw = () => box.replaceChildren(...[0, 1, 2, 3, 4, 5].map((n) => h('button', { type: 'button', class: value === n ? 'on' : '', onclick: () => { value = n; onChange(n); draw(); } }, String(n))));
   draw();
   return box;
 }
 
-function metaFields(init = {}) {
-  const val = { surfer_email: init.surfer_email ?? S.me.email, surfer_name: init.surfer_name ?? '', recorded_at: init.recorded_at ?? '', spot_id: init.spot_id ?? 'praia-do-amor',
-    board_id: init.board_id ?? '', source: init.source ?? 'unknown', wave_rating: init.wave_rating ?? null, surf_rating: init.surf_rating ?? null, title: init.title ?? '', notes: init.notes ?? '' };
-  const listeners = [];
-  const changed = () => listeners.forEach((f) => f(val));
-
-  const otherName = h('input', { type: 'text', placeholder: t('up_other_name'), value: val.surfer_name, oninput: (e) => (val.surfer_name = e.target.value) });
-  const surferSel = h('select', { onchange: (e) => { val.surfer_email = e.target.value; otherName.hidden = !!val.surfer_email; drawBoards(); } },
-    S.members.map((m) => h('option', { value: m.email, selected: val.surfer_email === m.email }, m.name)), h('option', { value: '', selected: !val.surfer_email }, t('up_other_surfer')));
-  otherName.hidden = !!val.surfer_email;
-
-  const boardSel = h('select', { onchange: async (e) => {
-    if (e.target.value === '__new') {
-      const name = prompt(t('up_board_name'));
-      if (name) { const b = await api('boards', { method: 'POST', body: { name, owner_email: val.surfer_email || S.me.email } }); S.boards.push(b); val.board_id = b.id; }
-      drawBoards();
-    } else val.board_id = e.target.value;
-  } });
-  const drawBoards = () => {
-    const owner = val.surfer_email || S.me.email;
-    boardSel.replaceChildren(h('option', { value: '' }, t('up_no_board')),
-      ...S.boards.filter((b) => b.owner_email === owner).map((b) => h('option', { value: b.id, selected: val.board_id === b.id }, b.name)),
-      h('option', { value: '__new' }, t('up_new_board')));
+function boardPicker(getOwner, value, onChange) {
+  const box = h('div', { class: 'picker' });
+  let adding = false;
+  const draw = () => {
+    const mine = S.boards.filter((b) => b.owner_email === getOwner());
+    if (value && !mine.some((b) => b.id === value)) { value = ''; onChange(null); }
+    const name = h('input', { type: 'text', placeholder: t('board_name') });
+    box.replaceChildren(
+      h('div', { class: 'chips' },
+        h('button', { type: 'button', class: 'chip' + (!value ? ' on' : ''), onclick: () => { value = ''; onChange(null); draw(); } }, t('no_board')),
+        mine.map((b) => h('button', { type: 'button', class: 'chip board-chip' + (value === b.id ? ' on' : ''), onclick: () => { value = b.id; onChange(b.id); draw(); } },
+          b.photo_key ? h('img', { src: media(b.photo_key), alt: '' }) : null, b.name)),
+        h('button', { type: 'button', class: 'chip add', onclick: () => { adding = !adding; draw(); } }, '+ ', t('new_board'))),
+      adding ? h('div', { class: 'inline-add' }, name, h('button', { type: 'button', class: 'btn small', onclick: async () => {
+        if (!name.value.trim()) return;
+        const b = await api('boards', { method: 'POST', body: { name: name.value, owner_email: getOwner() } });
+        S.boards.push(b); value = b.id; adding = false; onChange(b.id); draw();
+      } }, t('add'))) : null);
   };
-  drawBoards();
-
-  const dateIn = h('input', { type: 'datetime-local', value: val.recorded_at, onchange: (e) => { val.recorded_at = e.target.value.slice(0, 16); changed(); } });
-  const spotSel = h('select', { onchange: (e) => { val.spot_id = e.target.value; changed(); } }, S.spots.map((s) => h('option', { value: s.id, selected: val.spot_id === s.id }, s.name)));
-  const srcSel = h('select', { onchange: (e) => (val.source = e.target.value) }, ['camera', 'phone', 'unknown'].map((s) => h('option', { value: s, selected: val.source === s }, t('src_' + s))));
-  const field = (label, ...el) => h('label', { class: 'field' }, h('span', {}, label), ...el);
-
-  const el = h('div', { class: 'fields' },
-    field(t('surfer'), surferSel, otherName),
-    field(t('date'), dateIn, h('small', { class: 'muted datehint' })),
-    field(t('spot'), spotSel),
-    field(t('board'), boardSel),
-    field(t('source'), srcSel),
-    field(t('rating_help_wave'), ratingInput(val.wave_rating, (n) => (val.wave_rating = n))),
-    field(t('rating_help_surf'), ratingInput(val.surf_rating, (n) => (val.surf_rating = n))),
-    field(t('up_title_field'), h('input', { type: 'text', value: val.title, oninput: (e) => (val.title = e.target.value) })),
-    field(t('up_notes'), h('textarea', { rows: 3, value: val.notes, oninput: (e) => (val.notes = e.target.value) })));
-
-  return {
-    el, onChange: (f) => listeners.push(f),
-    set(k, v) { val[k] = v; if (k === 'recorded_at') dateIn.value = v; if (k === 'source') srcSel.value = v; },
-    hint(text) { el.querySelector('.datehint').textContent = text; },
-    values: () => ({ ...val, surfer_email: val.surfer_email || null, surfer_name: val.surfer_email ? null : val.surfer_name, board_id: val.board_id || null }),
-  };
+  box.redraw = draw;
+  draw();
+  return box;
+}
+function defaultSpot() {
+  const last = store.get('sc_last_spot', null);
+  if (last && S.spots.some((s) => s.id === last)) return last;
+  return [...S.favSpots][0] || S.spots[0]?.id || null;
 }
 
-// ---------------- vista: subir ----------------
-function localIso(d) { const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; }
-
+// ================= subir (varios videos) =================
 function viewUpload() {
   const root = $app();
-  let file = null, url = null, analysis = null, highlight = 0, meta = {};
+  const shared = { surfer_email: S.me.email, surfer_name: '', spot_id: defaultSpot(), board_id: store.get('sc_last_board', null) };
+  const items = [];
+  const list = h('div', { class: 'queue' });
   const status = h('div', { class: 'status muted' });
-  const flagsBox = h('div', { class: 'flags-help' });
-  const condBox = h('div', {});
-  const preview = h('video', { class: 'player', controls: true, playsInline: true, muted: true });
-  const hlLabel = h('span', { class: 'muted' });
-  const form = metaFields();
-  const progress = h('progress', { max: 1, value: 0, hidden: true });
-  const saveBtn = h('button', { class: 'btn big', disabled: true }, t('up_save'));
-  const step2 = h('div', { class: 'step2', hidden: true });
+  const uploadBtn = h('button', { class: 'btn big', disabled: true }, t('up_save'));
+  let busy = false;
 
-  let condTimer;
-  const refreshCond = (val) => {
-    clearTimeout(condTimer);
-    if (!val.recorded_at || !val.spot_id) { condBox.replaceChildren(h('p', { class: 'muted' }, t('no_conditions'))); return; }
-    condTimer = setTimeout(async () => {
-      condBox.replaceChildren(h('p', { class: 'muted' }, t('loading')));
-      try { condBox.replaceChildren(conditionsPanel(await api(`conditions?spot=${val.spot_id}&at=${val.recorded_at}`))); }
-      catch { condBox.replaceChildren(h('p', { class: 'muted' }, '–')); }
-    }, 400);
+  const otherName = h('input', { type: 'text', placeholder: t('up_other_name'), hidden: true, oninput: (e) => (shared.surfer_name = e.target.value) });
+  const boardBox = boardPicker(() => shared.surfer_email || S.me.email, shared.board_id, (id) => { shared.board_id = id; });
+  const surferSel = h('select', { onchange: (e) => { shared.surfer_email = e.target.value; otherName.hidden = !!shared.surfer_email; boardBox.redraw(); } },
+    S.members.map((m) => h('option', { value: m.email, selected: m.email === S.me.email }, m.email === S.me.email ? `${m.name} (${t('me')})` : m.name)),
+    h('option', { value: '' }, t('up_other_surfer')));
+  const spotBox = spotPicker(shared.spot_id, (id) => { shared.spot_id = id; items.forEach(fetchCond); });
+
+  const refreshBtn = () => {
+    const pending = items.filter((i) => i.status === 'ready' || i.status === 'error');
+    uploadBtn.disabled = busy || !pending.length || items.some((i) => i.status === 'analyzing');
+    uploadBtn.textContent = pending.length > 1 ? t('up_save_n').replace('{n}', pending.length) : t('up_save');
+    uploadBtn.hidden = !items.length;
   };
-  form.onChange(refreshCond);
 
-  const onFile = async (f) => {
-    if (!f) return;
-    file = f; if (url) URL.revokeObjectURL(url); url = URL.createObjectURL(f);
-    preview.src = url; step2.hidden = false; saveBtn.disabled = true;
-    status.textContent = t('up_analyzing');
-    const created = await readMp4CreationTime(f).catch(() => null);
-    if (created) { form.set('recorded_at', localIso(created)); form.hint(t('up_date_from_file')); }
-    else { form.set('recorded_at', ''); form.hint(t('up_date_unknown')); }
-    refreshCond(form.values());
+  async function fetchCond(it) {
+    if (!it.recorded_at || !shared.spot_id) { it.cond = null; it.draw(); return; }
+    const key = shared.spot_id + it.recorded_at;
+    it.condKey = key;
+    try { const c = await api(`conditions?spot=${shared.spot_id}&at=${it.recorded_at}`); if (it.condKey === key) { it.cond = c; it.draw(); } } catch {}
+  }
+
+  function card(it) {
+    const el = h('article', { class: 'qcard card' });
+    const player = h('video', { class: 'qplayer', src: it.url, controls: true, playsInline: true, preload: 'metadata' });
+    player.muted = true;
+    it.player = player;
+    const dateIn = h('input', { type: 'datetime-local', onchange: (e) => { it.recorded_at = e.target.value.slice(0, 16); fetchCond(it); } });
+    const noteBox = h('textarea', { rows: 2, placeholder: t('note_placeholder'), oninput: (e) => (it.note = e.target.value) });
+    const waveIn = starInput(it.wave_rating, (n) => (it.wave_rating = n));
+    const surfIn = starInput(it.surf_rating, (n) => (it.surf_rating = n));
+    let noteOpen = false;
+    const dynamic = h('div', { class: 'qdyn' });
+    it.draw = () => {
+      dateIn.value = it.recorded_at || '';
+      const srcHint = { meta: t('date_meta'), whatsapp: t('date_whatsapp'), name: t('date_name'), modified: t('date_modified') }[it.dateSource] || t('date_unknown');
+      hint.textContent = srcHint;
+      dynamic.replaceChildren(
+        it.status === 'analyzing' ? h('p', { class: 'small muted' }, it.progressText || t('up_analyzing')) : h('div', { class: 'qflags' }, flagChips(it.flags)),
+        it.cond ? h('p', { class: 'small muted' }, condLine(it.cond)) : null,
+        h('div', { class: 'qactions' },
+          h('button', { type: 'button', class: 'link-btn', onclick: () => { noteOpen = !noteOpen; noteBox.hidden = !noteOpen; it.draw(); if (noteOpen) noteBox.focus(); } }, noteOpen ? t('hide_note') : '+ ' + t('add_note')),
+          h('button', { type: 'button', class: 'link-btn', title: t('up_highlight_help'), onclick: () => { it.highlight = player.currentTime; it.draw(); } }, '⟲ ', t('loop_here'), ` (${fmtSec(it.highlight || 0)})`)),
+        it.status === 'uploading' ? h('progress', { max: 1, value: it.progress || 0 }) : null,
+        it.status === 'done' ? h('p', { class: 'ok small' }, '✓ ', t('up_done_one')) : null,
+        it.status === 'error' ? h('p', { class: 'err small' }, t('up_error'), ': ', it.error) : null);
+      removeBtn.hidden = it.status === 'uploading' || it.status === 'done';
+    };
+    const hint = h('small', { class: 'muted' });
+    const removeBtn = h('button', { class: 'icon-btn', title: t('remove'), onclick: () => { items.splice(items.indexOf(it), 1); el.remove(); URL.revokeObjectURL(it.url); refreshBtn(); } }, '✕');
+    noteBox.hidden = true;
+    el.append(player, h('div', { class: 'qbody' },
+      h('div', { class: 'qhead' }, h('strong', { class: 'fname', title: it.file.name }, it.file.name), removeBtn),
+      h('label', { class: 'field' }, h('span', {}, t('date')), dateIn, hint),
+      h('div', { class: 'rate-row' },
+        h('div', { class: 'field' }, h('span', {}, t('rating_wave')), waveIn),
+        h('div', { class: 'field' }, h('span', {}, t('rating_surf')), surfIn)),
+      dynamic, noteBox));
+    it.draw();
+    return el;
+  }
+
+  // analiza de a uno para no saturar el navegador
+  let analyzing = Promise.resolve();
+  function addFiles(files) {
+    for (const file of files) {
+      if (!file.type.startsWith('video/') && !/\.(mp4|mov|m4v|webm)$/i.test(file.name)) continue;
+      const it = { file, url: URL.createObjectURL(file), status: 'analyzing', wave_rating: null, surf_rating: null, note: '', flags: [], highlight: 0 };
+      items.push(it);
+      list.append(card(it));
+      analyzing = analyzing.then(() => analyze(it));
+    }
+    refreshBtn();
+  }
+  async function analyze(it) {
+    if (!items.includes(it)) return;
+    const d = await detectRecordedAt(it.file).catch(() => null);
+    if (d) { it.recorded_at = localIso(d.date); it.dateSource = d.source; }
+    it.draw(); fetchCond(it);
     try {
-      const v = await loadVideo(url);
-      meta = { duration: v.duration, width: v.videoWidth, height: v.videoHeight, size_bytes: f.size };
-      status.textContent = t('up_detect');
-      analysis = await detectSubject(v, (p) => (status.textContent = `${t('up_detect')} ${Math.round(p * 100)}%`));
-      highlight = Math.max(0, analysis.bestTime - 1);
-      const flags = computeFlags(analysis, { width: meta.width, height: meta.height, size: f.size, duration: meta.duration });
-      analysis.flags = flags;
-      flagsBox.replaceChildren(...flagChips(flags, true),
-        analysis.ratio != null ? h('p', { class: 'small muted' }, `${t('up_size_ratio')}: ${Math.round(analysis.ratio * 100)}%`) : null);
+      const v = await loadVideo(it.url);
+      it.meta = { duration: v.duration, width: v.videoWidth, height: v.videoHeight, size_bytes: it.file.size };
+      const a = await detectSubject(v, (p) => { it.progressText = `${t('up_detect')} ${Math.round(p * 100)}%`; it.draw(); });
+      it.ratio = a.ratio;
+      it.highlight = Math.max(0, a.bestTime - 1);
+      it.flags = computeFlags(a, { width: it.meta.width, height: it.meta.height, size: it.file.size, duration: it.meta.duration });
       v.removeAttribute('src'); v.load();
-    } catch (e) {
-      console.warn(e); analysis = { ratio: null, detected: 0, flags: [] };
-      status.textContent = String(e.message || e);
+    } catch (e) { console.warn(e); }
+    if (it.player) it.player.currentTime = it.highlight;
+    it.status = 'ready'; it.draw(); refreshBtn();
+  }
+
+  async function uploadOne(it) {
+    it.status = 'uploading'; it.progress = 0; it.draw();
+    const ext = (it.file.name.split('.').pop() || 'mp4').toLowerCase();
+    const body = { surfer_email: shared.surfer_email || null, surfer_name: shared.surfer_email ? null : shared.surfer_name, spot_id: shared.spot_id, board_id: shared.board_id || null,
+      recorded_at: it.recorded_at || null, wave_rating: it.wave_rating, surf_rating: it.surf_rating, note: it.note,
+      ...(it.meta || {}), subject_ratio: it.ratio ?? null, flags: it.flags, highlight_at: it.highlight };
+    const res = await fetch('/api/videos', { method: 'POST', headers: { 'content-type': 'application/json', 'x-ext': ext }, body: JSON.stringify(body) });
+    const { id, keys, error } = await res.json(); if (!id) throw new Error(error || res.status);
+    const pv = await makePreview(it.url, it.highlight);
+    const previewKey = `videos/${id}/preview.${pv.ext}`;
+    await api(`upload/put?key=${encodeURIComponent(previewKey)}`, { method: 'PUT', raw: pv.preview });
+    await api(`upload/put?key=${encodeURIComponent(keys.poster)}`, { method: 'PUT', raw: pv.poster });
+    await uploadMultipart(api, keys.original, it.file, (p) => { it.progress = p; it.draw(); });
+    await api('videos/' + id, { method: 'PATCH', body: { status: 'ready', original_key: keys.original, preview_key: previewKey, poster_key: keys.poster } });
+    it.status = 'done'; it.draw();
+  }
+
+  uploadBtn.onclick = async () => {
+    busy = true; refreshBtn();
+    store.set('sc_last_spot', shared.spot_id); store.set('sc_last_board', shared.board_id);
+    const todo = items.filter((i) => i.status === 'ready' || i.status === 'error');
+    for (const [k, it] of todo.entries()) {
+      status.textContent = `${t('up_uploading')} ${k + 1}/${todo.length}…`;
+      try { await uploadOne(it); } catch (e) { console.error(e); it.status = 'error'; it.error = e.message; it.draw(); }
     }
-    preview.currentTime = highlight;
-    hlLabel.textContent = fmtSec(highlight);
-    status.textContent = '';
-    saveBtn.disabled = false;
+    busy = false; S.videos = null;
+    const allDone = items.every((i) => i.status === 'done');
+    status.textContent = allDone ? t('up_done') : '';
+    refreshBtn();
+    if (allDone) setTimeout(() => (location.hash = '#/'), 900);
   };
 
-  saveBtn.onclick = async () => {
-    saveBtn.disabled = true; progress.hidden = false; progress.value = 0;
-    try {
-      const ext = (file.name.split('.').pop() || 'mp4').toLowerCase();
-      const body = { ...form.values(), ...meta, subject_ratio: analysis?.ratio ?? null, flags: analysis?.flags || [], highlight_at: highlight };
-      const res = await fetch('/api/videos', { method: 'POST', headers: { 'content-type': 'application/json', 'x-ext': ext }, body: JSON.stringify(body) });
-      const { id, keys, error } = await res.json(); if (!id) throw new Error(error);
-      status.textContent = t('up_preview');
-      const pv = await makePreview(url, highlight);
-      const previewKey = `videos/${id}/preview.${pv.ext}`;
-      await api(`upload/put?key=${encodeURIComponent(previewKey)}`, { method: 'PUT', raw: pv.preview });
-      await api(`upload/put?key=${encodeURIComponent(keys.poster)}`, { method: 'PUT', raw: pv.poster });
-      status.textContent = t('up_uploading');
-      await uploadMultipart(api, keys.original, file, (p) => { progress.value = p; status.textContent = `${t('up_uploading')} ${Math.round(p * 100)}%`; });
-      await api('videos/' + id, { method: 'PATCH', body: { status: 'ready', original_key: keys.original, preview_key: previewKey, poster_key: keys.poster } });
-      status.textContent = t('up_done');
-      S.videos = null;
-      location.hash = '#/v/' + id;
-    } catch (e) {
-      console.error(e); status.textContent = `${t('up_error')}: ${e.message}`; saveBtn.disabled = false;
-    }
-  };
+  const fileIn = h('input', { type: 'file', accept: 'video/*,.mov,.mp4', multiple: true, hidden: true, onchange: (e) => { addFiles(e.target.files); e.target.value = ''; } });
+  const drop = h('div', { class: 'drop', tabindex: 0, role: 'button', onclick: () => fileIn.click(), onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') fileIn.click(); } },
+    h('div', { class: 'drop-icon' }, '⇪'), h('strong', {}, t('drop_title')), h('span', { class: 'muted small' }, t('drop_help')), fileIn);
+  // arrastrar y soltar en cualquier parte de la página
+  root.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
+  root.ondragleave = (e) => { if (!e.relatedTarget || !root.contains(e.relatedTarget)) drop.classList.remove('over'); };
+  root.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); addFiles(e.dataTransfer.files); };
 
+  refreshBtn();
   root.replaceChildren(nav('nav_upload'), h('main', { class: 'wrap' },
     h('h1', {}, t('up_title')),
-    h('label', { class: 'drop card' }, h('input', { type: 'file', accept: 'video/*', onchange: (e) => onFile(e.target.files[0]) }), h('span', {}, t('up_pick'))),
-    status,
-    h('div', { class: 'upgrid' },
-      step2),
-  ));
-  step2.append(
-    h('div', { class: 'upcol' }, preview,
-      h('div', { class: 'hl card' }, h('strong', {}, t('up_highlight')), ' ', hlLabel, h('p', { class: 'small muted' }, t('up_highlight_help')),
-        h('button', { class: 'btn ghost', type: 'button', onclick: () => { highlight = preview.currentTime; hlLabel.textContent = fmtSec(highlight); } }, t('up_use_moment'))),
-      flagsBox),
-    h('div', { class: 'upcol card' }, form.el, h('h3', {}, t('up_conditions_preview')), condBox, progress, saveBtn));
+    drop,
+    h('section', { class: 'card shared' },
+      h('p', { class: 'small muted' }, t('shared_help')),
+      h('div', { class: 'shared-grid' },
+        h('label', { class: 'field' }, h('span', {}, t('surfer')), surferSel, otherName),
+        h('div', { class: 'field' }, h('span', {}, t('spot')), spotBox),
+        h('div', { class: 'field' }, h('span', {}, t('board')), boardBox))),
+    list, status, uploadBtn));
 }
 
-// ---------------- vista: perfil ----------------
+// ================= detalle =================
+let seekPlayer = () => {};
+function postit(c, canDelete, onDelete) {
+  const rot = ((c.id.charCodeAt(0) + c.id.charCodeAt(1)) % 5) - 2;
+  return h('div', { class: `postit ${c.kind}`, style: `--r:${rot * 0.6}deg` },
+    c.kind === 'rec' ? h('div', { class: 'pi-head' }, avatar(c, 26), h('div', {}, h('strong', {}, c.author_name), h('small', {}, t('recommendation')))) : null,
+    h('p', {}, c.body),
+    h('div', { class: 'pi-foot' },
+      c.at_seconds != null ? h('button', { class: 'ts', onclick: () => seekPlayer(c.at_seconds) }, '▶ ', fmtSec(c.at_seconds)) : h('span'),
+      canDelete ? h('button', { class: 'icon-btn', title: t('delete'), onclick: onDelete }, '✕') : null));
+}
+
+async function viewDetail(id) {
+  const root = $app(); root.replaceChildren(nav(''), h('main', { class: 'wrap' }, h('p', { class: 'muted' }, t('loading'))));
+  let v;
+  try { v = await api('videos/' + id); }
+  catch (e) { root.replaceChildren(nav(''), h('main', { class: 'wrap' }, h('div', { class: 'card' }, e.status === 403 ? t('no_access') : t('not_found')))); return; }
+  const player = h('video', { class: 'player', controls: true, playsInline: true, preload: 'metadata', poster: media(v.poster_key), src: media(v.original_key) });
+  seekPlayer = (s) => { player.currentTime = s; player.play(); };
+  const canDel = (c) => c.author_email === S.me.email || v.can_edit;
+
+  const delComment = (c) => async () => { await api('comments/' + c.id, { method: 'DELETE' }); v.comments = v.comments.filter((x) => x.id !== c.id); S.videos = null; renderAll(); };
+  const addComment = async (kind, body, at) => {
+    const { id: cid } = await api(`videos/${v.id}/comments`, { method: 'POST', body: { body, kind, at_seconds: at } });
+    v.comments.push({ id: cid, video_id: v.id, author_email: S.me.email, author_name: S.me.name, author_avatar: S.me.avatar_key, kind, body, at_seconds: at, created_at: new Date().toISOString().slice(0, 19).replace('T', ' ') });
+    S.videos = null; renderAll();
+  };
+
+  // --- post-its: notas propias (amarillas) y recomendaciones (verdes, con foto de quien recomienda) ---
+  const boardEl = h('section', { class: 'postits-wrap' });
+  let composer = null; // 'note' | 'rec'
+  const renderPostits = () => {
+    const notes = v.comments.filter((c) => c.kind === 'note' || c.kind === 'rec');
+    const ta = h('textarea', { rows: 3, placeholder: t(composer === 'rec' ? 'rec_placeholder' : 'note_placeholder') });
+    const mark = h('input', { type: 'checkbox', checked: player.currentTime > 0.5 });
+    boardEl.replaceChildren(
+      h('div', { class: 'sec-head' }, h('h3', {}, t('notes_title')),
+        h('div', { class: 'sec-actions' },
+          v.can_edit ? h('button', { class: 'chip note-btn', onclick: () => { composer = 'note'; renderPostits(); } }, '+ ', t('add_note')) : null,
+          v.can_interact && !v.can_edit ? h('button', { class: 'chip rec-btn', onclick: () => { composer = 'rec'; renderPostits(); } }, '+ ', t('recommend')) : null)),
+      h('div', { class: 'postits' },
+        v.notes ? h('div', { class: 'postit note', style: '--r:-1deg' }, h('p', {}, v.notes)) : null,
+        notes.map((c) => postit(c, canDel(c), delComment(c))),
+        composer ? h('form', { class: `postit ${composer} composing`, onsubmit: async (e) => {
+          e.preventDefault(); const body = ta.value.trim(); if (!body) return;
+          const kind = composer; composer = null;
+          await addComment(kind, body, mark.checked ? Math.round(player.currentTime * 10) / 10 : null);
+        } }, ta, h('label', { class: 'small' }, mark, ' ', t('at_second'), ' ', fmtSec(player.currentTime)),
+          h('div', { class: 'pi-foot' }, h('button', { type: 'button', class: 'link-btn', onclick: () => { composer = null; renderPostits(); } }, t('cancel')), h('button', { class: 'btn small' }, t('save')))) : null,
+        !notes.length && !composer && !v.notes ? h('p', { class: 'muted small' }, t('no_notes')) : null));
+    if (composer) ta.focus();
+  };
+
+  // --- likes ---
+  const likeBox = h('div', { class: 'likes' });
+  const renderLikes = () => likeBox.replaceChildren(
+    h('button', { class: 'like-btn' + (v.liked ? ' on' : ''), disabled: !v.can_interact, title: t('like'), onclick: async () => {
+      const r = await api(`videos/${v.id}/like`, { method: 'POST' });
+      v.liked = r.liked; v.n_likes = r.n_likes;
+      v.likers = r.liked ? [...v.likers, { name: S.me.name, avatar_key: S.me.avatar_key }] : v.likers.filter((l) => l.name !== S.me.name);
+      S.videos = null; renderLikes();
+    } }, '♥'),
+    h('span', { class: 'like-faces' }, v.likers.slice(0, 6).map((l) => avatar(l, 22))),
+    h('span', { class: 'muted small' }, v.n_likes ? `${v.n_likes} ${t(v.n_likes === 1 ? 'like_one' : 'like_many')}` : t('no_likes')));
+
+  // --- comentarios estilo red social ---
+  const commentsEl = h('section', { class: 'comments' });
+  const renderComments = () => {
+    const list = v.comments.filter((c) => c.kind === 'general');
+    const ta = h('textarea', { rows: 1, placeholder: t('comment_placeholder'), oninput: (e) => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'; } });
+    commentsEl.replaceChildren(
+      h('h3', {}, t('comments'), list.length ? ` (${list.length})` : ''),
+      h('ul', { class: 'feed' }, list.map((c) => h('li', {},
+        avatar(c, 34),
+        h('div', { class: 'bubble' },
+          h('div', { class: 'chead' }, h('strong', {}, c.author_name), h('span', { class: 'muted small' }, ago(c.created_at)),
+            c.at_seconds != null ? h('button', { class: 'ts', onclick: () => seekPlayer(c.at_seconds) }, '▶ ', fmtSec(c.at_seconds)) : null),
+          h('p', {}, c.body)),
+        canDel(c) ? h('button', { class: 'icon-btn', title: t('delete'), onclick: delComment(c) }, '✕') : null))),
+      !list.length ? h('p', { class: 'muted small' }, t('no_comments')) : null,
+      v.can_interact ? h('form', { class: 'composer', onsubmit: async (e) => { e.preventDefault(); const b = ta.value.trim(); if (b) await addComment('general', b, null); } },
+        avatar(S.me, 34), ta, h('button', { class: 'btn small' }, t('send'))) : null);
+  };
+
+  // --- panel lateral ---
+  const side = h('aside', { class: 'side card' });
+  const renderSide = () => side.replaceChildren(
+    h('div', { class: 'surfer-head' }, avatar({ name: surferName(v), avatar_key: v.surfer_avatar }, 44), h('div', {}, h('h1', {}, surferName(v)), h('span', { class: 'muted' }, fmtDate(v.recorded_at)))),
+    h('div', { class: 'kv' }, h('span', {}, t('spot')), h('b', {}, v.spot_name || '–')),
+    h('div', { class: 'kv' }, h('span', {}, t('board')), h('b', { class: 'board-val' }, v.board_photo ? h('img', { src: media(v.board_photo), alt: '' }) : null, v.board_name || t('no_board'))),
+    h('div', { class: 'kv' }, h('span', {}, t('wave')), stars(v.wave_rating, 'big')),
+    h('div', { class: 'kv' }, h('span', {}, t('surf')), stars(v.surf_rating, 'big')),
+    (v.flags || []).length ? h('div', { class: 'flags-help' }, flagChips(v.flags, true)) : null,
+    h('h3', {}, t('conditions')), conditionsPanel(v.conditions),
+    v.can_edit ? h('div', { class: 'actions' },
+      h('button', { class: 'btn ghost', onclick: editForm }, t('edit')),
+      h('button', { class: 'btn danger', onclick: async () => { if (!confirm(t('confirm_delete'))) return; await api('videos/' + v.id, { method: 'DELETE' }); S.videos = null; location.hash = '#/'; } }, t('delete'))) : null);
+
+  function editForm() {
+    const val = { recorded_at: v.recorded_at, spot_id: v.spot_id, board_id: v.board_id, wave_rating: v.wave_rating, surf_rating: v.surf_rating };
+    side.replaceChildren(h('h3', {}, t('edit')),
+      h('label', { class: 'field' }, h('span', {}, t('date')), h('input', { type: 'datetime-local', value: val.recorded_at || '', onchange: (e) => (val.recorded_at = e.target.value.slice(0, 16)) })),
+      h('div', { class: 'field' }, h('span', {}, t('spot')), spotPicker(val.spot_id, (sid) => (val.spot_id = sid))),
+      h('div', { class: 'field' }, h('span', {}, t('board')), boardPicker(() => v.surfer_email || v.uploader_email, val.board_id, (bid) => (val.board_id = bid))),
+      h('div', { class: 'field' }, h('span', {}, t('rating_wave')), starInput(val.wave_rating, (n) => (val.wave_rating = n))),
+      h('div', { class: 'field' }, h('span', {}, t('rating_surf')), starInput(val.surf_rating, (n) => (val.surf_rating = n))),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn', onclick: async () => { await api('videos/' + v.id, { method: 'PATCH', body: val }); S.videos = null; viewDetail(v.id); } }, t('save')),
+        h('button', { class: 'btn ghost', onclick: renderSide }, t('cancel'))));
+  }
+
+  const renderAll = () => { renderPostits(); renderComments(); renderLikes(); };
+  renderAll(); renderSide();
+  root.replaceChildren(nav(''), h('main', { class: 'wrap detail' },
+    h('a', { href: '#/', class: 'back' }, '← ', t('back')),
+    h('div', { class: 'dgrid' }, h('div', {}, player, likeBox, boardEl, commentsEl), side)));
+}
+
+// ================= amigos =================
+function toggle(label, checked, onChange) {
+  return h('label', { class: 'switch' }, h('input', { type: 'checkbox', checked, onchange: (e) => onChange(e.target.checked) }), h('span', { class: 'track' }), label);
+}
+function viewFriends() {
+  const root = $app();
+  const render = () => {
+    const others = S.members.filter((m) => m.email !== S.me.email);
+    others.sort((a, b) => (S.myGrants.get(b.email)?.favorite || 0) - (S.myGrants.get(a.email)?.favorite || 0) || (S.myGrants.has(b.email) - S.myGrants.has(a.email)) || a.name.localeCompare(b.name));
+    const set = async (m, patch) => {
+      await api('friends/' + encodeURIComponent(m.email), { method: 'PUT', body: patch });
+      const cur = S.myGrants.get(m.email) || { can_view: 1, can_interact: 1, favorite: 0 };
+      S.myGrants.set(m.email, { ...cur, friend_email: m.email, ...Object.fromEntries(Object.entries(patch).map(([k, x]) => [k, x ? 1 : 0])) });
+      render();
+    };
+    root.replaceChildren(nav('nav_friends'), h('main', { class: 'wrap narrow' },
+      h('h1', {}, t('friends_title')), h('p', { class: 'muted' }, t('friends_help')),
+      others.length ? others.map((m) => {
+        const g = S.myGrants.get(m.email);
+        const theirs = S.grantsToMe.get(m.email);
+        return h('section', { class: 'card friend' + (g ? ' is-friend' : '') },
+          h('div', { class: 'friend-head' }, avatar(m, 44),
+            h('div', { class: 'grow' }, h('strong', {}, m.name), h('div', { class: 'muted small' }, '@', m.username || '', theirs?.can_view ? ` · ${t('shares_with_you')}` : '')),
+            g ? h('button', { class: 'star-btn' + (g.favorite ? ' on' : ''), title: t('favorite'), onclick: () => set(m, { favorite: !g.favorite }) }, '★') : null,
+            g ? null : h('button', { class: 'btn small', onclick: () => set(m, { can_view: true, can_interact: true }) }, t('add_friend'))),
+          g ? h('div', { class: 'perms' },
+            toggle(t('perm_view'), !!g.can_view, (x) => set(m, { can_view: x })),
+            toggle(t('perm_interact'), !!g.can_interact, (x) => set(m, { can_interact: x })),
+            h('button', { class: 'link-btn danger-text', onclick: async () => { await api('friends/' + encodeURIComponent(m.email), { method: 'DELETE' }); S.myGrants.delete(m.email); render(); } }, t('remove_friend'))) : null);
+      }) : h('p', { class: 'muted' }, t('no_people'))));
+  };
+  render();
+}
+
+// ================= perfil =================
 function viewProfile() {
   const root = $app();
-  const langSel = h('select', { onchange: async (e) => { await api('me', { method: 'PATCH', body: { lang: e.target.value } }); setLang(e.target.value); route(); } },
-    [['es', 'Español'], ['en', 'English'], ['pt', 'Português']].map(([k, n]) => h('option', { value: k, selected: getLang() === k }, n)));
-  const myBoards = S.boards.filter((b) => b.owner_email === S.me.email);
-  const bName = h('input', { type: 'text', placeholder: t('up_board_name') });
-  const bDet = h('input', { type: 'text', placeholder: t('details') });
+  const msg = h('p', { class: 'small muted' });
+  const filePick = (onFile) => h('input', { type: 'file', accept: 'image/*', hidden: true, onchange: (e) => e.target.files[0] && onFile(e.target.files[0]) });
 
-  const alertBox = h('p', { class: 'small muted' });
+  const avatarIn = filePick(async (f) => {
+    const r = await api('me/avatar', { method: 'PUT', raw: await resizeImage(f, 256) });
+    S.me.avatar_key = r.avatar_key; const mm = memberBy(S.me.email); if (mm) mm.avatar_key = r.avatar_key; viewProfile();
+  });
+  const nameIn = h('input', { type: 'text', value: S.me.name });
+  const langSel = h('select', { onchange: async (e) => { await api('me', { method: 'PATCH', body: { lang: e.target.value } }); setLang(e.target.value); viewProfile(); } },
+    [['es', 'Español'], ['en', 'English'], ['pt', 'Português']].map(([k, n]) => h('option', { value: k, selected: getLang() === k }, n)));
   const newPw = h('input', { type: 'password', placeholder: t('new_password'), autocomplete: 'new-password' });
-  const pwMsg = h('span', { class: 'small muted' });
+
+  // tablas con foto
+  const myBoards = S.boards.filter((b) => b.owner_email === S.me.email);
+  const bName = h('input', { type: 'text', placeholder: t('board_name') });
+  const bDet = h('input', { type: 'text', placeholder: t('board_details') });
+  const boardCard = (b) => {
+    const pic = filePick(async (f) => { const r = await api(`boards/${b.id}/photo`, { method: 'PUT', raw: await resizeImage(f, 900, false) }); b.photo_key = r.photo_key; viewProfile(); });
+    return h('div', { class: 'board-card' },
+      h('button', { class: 'board-photo', title: t('board_photo'), onclick: () => pic.click() },
+        b.photo_key ? h('img', { src: media(b.photo_key), alt: b.name }) : h('span', { class: 'ph' }, '+', h('small', {}, t('board_photo'))), pic),
+      h('div', { class: 'grow' }, h('strong', {}, b.name), b.details ? h('div', { class: 'muted small' }, b.details) : null),
+      h('button', { class: 'icon-btn', title: t('remove'), onclick: async () => { await api('boards/' + b.id, { method: 'PATCH', body: { active: 0 } }); S.boards = S.boards.filter((x) => x.id !== b.id); viewProfile(); } }, '✕'));
+  };
+
+  // picos favoritos
+  const spotChip = (s) => h('button', { class: 'chip' + (S.favSpots.has(s.id) ? ' on' : ''), onclick: async () => {
+    const fav = !S.favSpots.has(s.id);
+    await api(`spots/${s.id}/favorite`, { method: 'PUT', body: { favorite: fav } });
+    fav ? S.favSpots.add(s.id) : S.favSpots.delete(s.id); viewProfile();
+  } }, h('span', { class: 'fav' }, S.favSpots.has(s.id) ? '★' : '☆'), s.name);
+  const spotName = h('input', { type: 'text', placeholder: t('spot_name') });
+  const spotCoords = h('input', { type: 'text', placeholder: t('spot_coords') });
+
   const admin = S.me.role === 'admin' ? (() => {
     const un = h('input', { type: 'text', placeholder: t('username'), autocapitalize: 'off' });
     const pw = h('input', { type: 'text', placeholder: t('password') });
-    const em = h('input', { type: 'email', placeholder: t('email') });
     const nm = h('input', { type: 'text', placeholder: t('name') });
     const rl = h('select', {}, ['member', 'coach', 'admin'].map((r) => h('option', { value: r }, t('role_' + r))));
-    return h('section', { class: 'card' }, h('h3', {}, t('members')),
-      h('ul', { class: 'plain' }, S.members.map((m) => h('li', {}, h('strong', {}, m.name), ' ', h('span', { class: 'muted' }, t('role_' + m.role))))),
-      h('form', { class: 'inline', onsubmit: async (e) => { e.preventDefault(); try { await api('members', { method: 'POST', body: { username: un.value, password: pw.value, email: em.value, name: nm.value, role: rl.value } }); await boot(); viewProfile(); } catch (x) { alertBox.textContent = x.message; } } },
-        un, pw, nm, em, rl, h('button', { class: 'btn' }, t('add_member'))),
-      alertBox,
-      h('p', { class: 'small muted' }, t('access_note')));
+    const amsg = h('p', { class: 'small muted' });
+    return h('section', { class: 'card' }, h('h3', {}, t('admin_users')),
+      h('p', { class: 'small muted' }, t('admin_help')),
+      h('form', { class: 'inline', onsubmit: async (e) => {
+        e.preventDefault();
+        try { await api('members', { method: 'POST', body: { username: un.value, password: pw.value, name: nm.value, role: rl.value } }); await boot(); amsg.textContent = t('user_created'); un.value = pw.value = nm.value = ''; }
+        catch (x) { amsg.textContent = t('err_' + x.message); }
+      } }, nm, un, pw, rl, h('button', { class: 'btn' }, t('create_user'))), amsg);
   })() : null;
 
   root.replaceChildren(nav('nav_profile'), h('main', { class: 'wrap narrow' },
-    h('h1', {}, S.me.name), h('p', { class: 'muted' }, '@', S.me.username || S.me.email),
-    h('section', { class: 'card' }, h('label', { class: 'field' }, h('span', {}, t('language')), langSel)),
-    h('section', { class: 'card' }, h('h3', {}, t('change_password')),
-      h('form', { class: 'inline', onsubmit: async (e) => { e.preventDefault(); try { await api('me', { method: 'PATCH', body: { password: newPw.value } }); newPw.value = ''; pwMsg.textContent = t('saved'); } catch (x) { pwMsg.textContent = x.message; } } },
-        newPw, h('button', { class: 'btn' }, t('save'))), pwMsg,
-      h('p', {}, h('button', { class: 'btn ghost', onclick: async () => { await api('logout', { method: 'POST' }); location.reload(); } }, t('logout')))),
+    h('section', { class: 'card profile-head' },
+      h('button', { class: 'avatar-edit', onclick: () => avatarIn.click() }, avatar(S.me, 84), h('span', {}, t('change_photo')), avatarIn),
+      h('div', { class: 'grow' },
+        h('form', { class: 'inline', onsubmit: async (e) => { e.preventDefault(); await api('me', { method: 'PATCH', body: { name: nameIn.value } }); S.me.name = nameIn.value; const mm = memberBy(S.me.email); if (mm) mm.name = nameIn.value; msg.textContent = t('saved'); } },
+          nameIn, h('button', { class: 'btn small' }, t('save'))),
+        h('p', { class: 'muted small' }, '@', S.me.username), msg)),
+
     h('section', { class: 'card' }, h('h3', {}, t('my_boards')),
-      h('ul', { class: 'plain' }, myBoards.map((b) => h('li', {}, h('strong', {}, b.name), b.details ? h('span', { class: 'muted' }, ' · ', b.details) : null))),
-      h('form', { class: 'inline', onsubmit: async (e) => { e.preventDefault(); if (!bName.value) return; S.boards.push(await api('boards', { method: 'POST', body: { name: bName.value, details: bDet.value } })); viewProfile(); } },
-        bName, bDet, h('button', { class: 'btn' }, t('add')))),
+      myBoards.length ? h('div', { class: 'boards' }, myBoards.map(boardCard)) : h('p', { class: 'muted small' }, t('no_boards')),
+      h('form', { class: 'inline', onsubmit: async (e) => { e.preventDefault(); if (!bName.value.trim()) return; S.boards.push(await api('boards', { method: 'POST', body: { name: bName.value, details: bDet.value } })); viewProfile(); } },
+        bName, bDet, h('button', { class: 'btn small' }, t('add')))),
+
+    h('section', { class: 'card' }, h('h3', {}, t('my_spots')), h('p', { class: 'small muted' }, t('my_spots_help')),
+      h('div', { class: 'chips' }, S.spots.map(spotChip)),
+      h('form', { class: 'inline', onsubmit: async (e) => {
+        e.preventDefault(); if (!spotName.value.trim()) return;
+        const [lat, lon] = spotCoords.value.split(',').map((x) => parseFloat(x));
+        const s = await api('spots', { method: 'POST', body: { name: spotName.value, lat, lon } });
+        S.spots.push(s); S.favSpots.add(s.id); viewProfile();
+      } }, spotName, spotCoords, h('button', { class: 'btn small' }, t('add'))),
+      h('p', { class: 'small muted' }, t('spot_coords_help'))),
+
+    h('section', { class: 'card' }, h('h3', {}, t('account')),
+      h('label', { class: 'field' }, h('span', {}, t('language')), langSel),
+      h('form', { class: 'inline', onsubmit: async (e) => { e.preventDefault(); try { await api('me', { method: 'PATCH', body: { password: newPw.value } }); newPw.value = ''; msg.textContent = t('saved'); } catch { msg.textContent = t('err_short_password'); } } },
+        newPw, h('button', { class: 'btn small' }, t('change_password'))),
+      h('p', {}, h('button', { class: 'btn ghost', onclick: async () => { await api('logout', { method: 'POST' }); location.reload(); } }, t('logout')))),
     admin));
 }
 
-// ---------------- arranque y rutas ----------------
-async function boot() {
-  const d = await api('me');
-  Object.assign(S, { me: d.me, members: d.members, spots: d.spots, boards: d.boards });
-  setLang(d.me.lang || 'es');
-}
-
-async function route() {
-  document.querySelectorAll('video.loop').forEach((v) => io.unobserve(v));
-  const hash = location.hash || '#/';
-  let m;
-  try {
-    if ((m = /^#\/v\/([a-f0-9]{16})/.exec(hash))) return await viewDetail(m[1]);
-    if (hash.startsWith('#/pizarra')) return await viewBoard();
-    if (hash.startsWith('#/subir')) return viewUpload();
-    if (hash.startsWith('#/perfil')) return viewProfile();
-    return await viewTimeline();
-  } catch (e) {
-    console.error(e);
-    $app().replaceChildren(nav(''), h('main', { class: 'wrap' }, h('div', { class: 'card' }, String(e.message || e))));
-  }
-}
-
+// ================= login =================
 function loginScreen() {
   setLang('es');
   const u = h('input', { type: 'text', autocomplete: 'username', autocapitalize: 'off', required: true });
   const p = h('input', { type: 'password', autocomplete: 'current-password', required: true });
-  const msg = h('p', { class: 'small', style: 'color:var(--coral)' });
+  const msg = h('p', { class: 'small err' });
   $app().replaceChildren(h('main', { class: 'login' },
     h('form', { class: 'card login-card', onsubmit: async (e) => {
       e.preventDefault(); msg.textContent = '';
@@ -495,12 +708,35 @@ function loginScreen() {
   u.focus();
 }
 
+// ================= rutas =================
+async function route() {
+  document.querySelectorAll('video.loop').forEach((v) => io.unobserve(v));
+  const root = $app(); root.ondragover = root.ondrop = root.ondragleave = null;
+  const hash = location.hash || '#/';
+  let m;
+  try {
+    if ((m = /^#\/v\/([a-f0-9]{16})/.exec(hash))) return await viewDetail(m[1]);
+    if (hash.startsWith('#/pizarra')) return await viewBoard();
+    if (hash.startsWith('#/subir')) return viewUpload();
+    if (hash.startsWith('#/amigos')) return viewFriends();
+    if (hash.startsWith('#/perfil')) return viewProfile();
+    return await viewTimeline();
+  } catch (e) {
+    console.error(e);
+    if (e.status === 401) return loginScreen();
+    root.replaceChildren(nav(''), h('main', { class: 'wrap' }, h('div', { class: 'card' }, String(e.message || e))));
+  }
+}
+// evita que soltar un archivo fuera de la zona lo abra en el navegador
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => e.preventDefault());
 window.addEventListener('hashchange', route);
 (async () => {
   try { await boot(); }
   catch (e) {
-    if (e.status !== 401) { $app().replaceChildren(h('main', { class: 'wrap narrow' }, h('div', { class: 'card' }, String(e.message)))); return; }
-    return loginScreen();
+    if (e.status === 401) return loginScreen();
+    $app().replaceChildren(h('main', { class: 'wrap narrow' }, h('div', { class: 'card' }, String(e.message))));
+    return;
   }
   route();
 })();

@@ -173,3 +173,47 @@ export async function uploadMultipart(api, key, file, onProgress) {
     throw e;
   }
 }
+
+// ---------- fecha desde el nombre del archivo ----------
+// WhatsApp Video 2026-11-23 at 08.17.48 · VID_20261123_081748 · PXL_20261123_081748123 · 2026-11-23 08.17.48
+export function dateFromFilename(name) {
+  const pats = [
+    /(20\d{2})-(\d{2})-(\d{2})[ _T]*(?:at[ _])?(\d{2})[.:_-](\d{2})[.:_-](\d{2})/i,
+    /(20\d{2})(\d{2})(\d{2})[_-](\d{2})(\d{2})(\d{2})/,
+  ];
+  for (const re of pats) {
+    const m = re.exec(name);
+    if (m) {
+      const d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+      if (!isNaN(d) && d.getFullYear() > 2010) return { date: d, whatsapp: /whatsapp/i.test(name) };
+    }
+  }
+  return null;
+}
+
+// Fecha y hora del video: metadatos del archivo > nombre > fecha de modificación.
+export async function detectRecordedAt(file) {
+  const byName = dateFromFilename(file.name);
+  if (byName?.whatsapp) return { date: byName.date, source: 'whatsapp' }; // WhatsApp re-codifica: su metadato es la hora de envío
+  const meta = await readMp4CreationTime(file).catch(() => null);
+  if (meta) return { date: meta, source: 'meta' };
+  if (byName) return { date: byName.date, source: 'name' };
+  if (file.lastModified) return { date: new Date(file.lastModified), source: 'modified' };
+  return null;
+}
+
+// ---------- foto cuadrada/recortada liviana (perfil, tablas) ----------
+export async function resizeImage(file, size = 512, square = true) {
+  const img = await createImageBitmap(file);
+  const c = document.createElement('canvas');
+  if (square) {
+    const s = Math.min(img.width, img.height);
+    c.width = c.height = size;
+    c.getContext('2d').drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
+  } else {
+    const k = Math.min(1, size / Math.max(img.width, img.height));
+    c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  }
+  return new Promise((r) => c.toBlob(r, 'image/jpeg', 0.85));
+}
