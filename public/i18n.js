@@ -1,6 +1,12 @@
 // Textos de la interfaz. Español es la base; inglés y portugués listos para activar desde el perfil.
 export const dict = {
   es: {
+    session_title: 'La sesión', session_day: 'Día', session_time: 'Hora aprox. de entrada', videos_step: 'Los videos de esa sesión',
+    reading_date: 'Leyendo la fecha del archivo…', time_from_file: 'hora del archivo', time_from_session: 'hora de la sesión', date_other_day: 'el archivo dice {d}',
+    date_multi_days: 'Hay videos de días distintos. Sube cada día por separado para que queden juntos.', date_no_meta: 'Algunos videos no traen la fecha de grabación (pasa con WhatsApp). Confirma el día de la sesión.',
+    up_need_date: 'Indica el día y la hora de la sesión', fc_title: 'Forecast del día', fc_loading: 'Buscando el forecast…', fc_need_date: 'Indica día, hora y pico para ver el forecast de la sesión.', fc_see_day: 'ver forecast del día',
+    fc_source: 'Fuente: modelo Open-Meteo para mar abierto; en la orilla las olas pueden ser menores.', fc_compare: 'Comparar en Surf-Forecast',
+    wind_state: 'Estado', ws_on: 'onshore', ws_crosson: 'cross-on', ws_cross: 'cross', ws_crossoff: 'cross-off', ws_off: 'offshore',
     brand: 'Surf Club', me: 'Yo', loading: 'Cargando…', back: 'Volver', save: 'Guardar', saved: 'Guardado.', cancel: 'Cancelar', edit: 'Editar', delete: 'Eliminar', remove: 'Quitar', add: 'Agregar', send: 'Enviar', name: 'Nombre',
     nav_timeline: 'Línea de tiempo', nav_board: 'Pizarra', nav_upload: 'Subir', nav_friends: 'Amigos', nav_profile: 'Perfil',
     login_title: 'Entrar al club', username: 'Usuario', password: 'Clave', enter: 'Entrar', bad_login: 'Usuario o clave incorrectos.', logout: 'Cerrar sesión',
@@ -46,6 +52,12 @@ export const dict = {
     err_bad_username: 'Usuario inválido: usa letras, números, punto o guion.', err_short_password: 'La clave debe tener al menos 6 caracteres.', err_forbidden: 'No tienes permiso.',
   },
   en: {
+    session_title: 'The session', session_day: 'Day', session_time: 'Approx. paddle-out time', videos_step: 'Videos from that session',
+    reading_date: 'Reading the file date…', time_from_file: 'time from file', time_from_session: 'session time', date_other_day: 'the file says {d}',
+    date_multi_days: 'There are videos from different days. Upload each day separately so they stay together.', date_no_meta: 'Some videos have no recording date (WhatsApp strips it). Confirm the session day.',
+    up_need_date: 'Set the session day and time', fc_title: 'Forecast for the day', fc_loading: 'Fetching the forecast…', fc_need_date: 'Set day, time and spot to see the session forecast.', fc_see_day: 'see day forecast',
+    fc_source: 'Source: Open-Meteo open-water model; waves at the shore may be smaller.', fc_compare: 'Compare on Surf-Forecast',
+    wind_state: 'State', ws_on: 'onshore', ws_crosson: 'cross-on', ws_cross: 'cross', ws_crossoff: 'cross-off', ws_off: 'offshore',
     brand: 'Surf Club', me: 'Me', loading: 'Loading…', back: 'Back', save: 'Save', saved: 'Saved.', cancel: 'Cancel', edit: 'Edit', delete: 'Delete', remove: 'Remove', add: 'Add', send: 'Send', name: 'Name',
     nav_timeline: 'Timeline', nav_board: 'Board', nav_upload: 'Upload', nav_friends: 'Friends', nav_profile: 'Profile',
     login_title: 'Sign in to the club', username: 'Username', password: 'Password', enter: 'Sign in', bad_login: 'Wrong username or password.', logout: 'Sign out',
@@ -86,6 +98,12 @@ export const dict = {
     err_bad_username: 'Invalid username: use letters, numbers, dot or dash.', err_short_password: 'Password must be at least 6 characters.', err_forbidden: 'Not allowed.',
   },
   pt: {
+    session_title: 'A sessão', session_day: 'Dia', session_time: 'Hora aprox. de entrada', videos_step: 'Os vídeos dessa sessão',
+    reading_date: 'Lendo a data do arquivo…', time_from_file: 'hora do arquivo', time_from_session: 'hora da sessão', date_other_day: 'o arquivo diz {d}',
+    date_multi_days: 'Há vídeos de dias diferentes. Envie cada dia separado para ficarem juntos.', date_no_meta: 'Alguns vídeos não têm a data de gravação (acontece com WhatsApp). Confirme o dia da sessão.',
+    up_need_date: 'Indique o dia e a hora da sessão', fc_title: 'Previsão do dia', fc_loading: 'Buscando a previsão…', fc_need_date: 'Indique dia, hora e pico para ver a previsão da sessão.', fc_see_day: 'ver previsão do dia',
+    fc_source: 'Fonte: modelo Open-Meteo para mar aberto; na beira as ondas podem ser menores.', fc_compare: 'Comparar no Surf-Forecast',
+    wind_state: 'Estado', ws_on: 'maral', ws_crosson: 'cross-maral', ws_cross: 'lateral', ws_crossoff: 'cross-terral', ws_off: 'terral',
     brand: 'Surf Club', me: 'Eu', loading: 'Carregando…', back: 'Voltar', save: 'Salvar', saved: 'Salvo.', cancel: 'Cancelar', edit: 'Editar', delete: 'Excluir', remove: 'Remover', add: 'Adicionar', send: 'Enviar', name: 'Nome',
     nav_timeline: 'Linha do tempo', nav_board: 'Mural', nav_upload: 'Enviar', nav_friends: 'Amigos', nav_profile: 'Perfil',
     login_title: 'Entrar no clube', username: 'Usuário', password: 'Senha', enter: 'Entrar', bad_login: 'Usuário ou senha incorretos.', logout: 'Sair',

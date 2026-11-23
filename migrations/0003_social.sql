@@ -7,3 +7,6 @@ CREATE TABLE IF NOT EXISTS friends (owner_email TEXT NOT NULL, friend_email TEXT
 CREATE TABLE IF NOT EXISTS likes (video_id TEXT NOT NULL, email TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (video_id, email));
 UPDATE comments SET kind = 'rec' WHERE kind = 'coach';
 DELETE FROM spots WHERE id = 'otro' AND NOT EXISTS (SELECT 1 FROM videos WHERE spot_id = 'otro');
+ALTER TABLE spots ADD COLUMN facing REAL NOT NULL DEFAULT 90;
+-- las playas de Pipa miran al NE: viento SW = offshore (referencia: Surf-Forecast)
+UPDATE spots SET facing = 45 WHERE created_by IS NULL AND facing = 90;

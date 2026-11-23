@@ -161,9 +161,11 @@ function videoCard(v) {
 }
 
 function dayConditions(list) {
-  const c = list.find((v) => v.conditions && v.conditions.swell_height != null)?.conditions;
-  if (!c) return null;
-  return h('div', { class: 'daycond muted' }, condLine(c));
+  const v0 = list.find((v) => v.conditions && v.conditions.swell_height != null);
+  if (!v0) return null;
+  const c = v0.conditions;
+  return h('details', { class: 'daycond' }, h('summary', { class: 'muted' }, condLine(c), c.wind_state ? ` (${t(WS[c.wind_state])})` : '', ' · ', h('span', { class: 'link' }, t('fc_see_day'))),
+    forecastTable(c, (v0.recorded_at || '').slice(11, 16), v0.spot_id));
 }
 
 async function viewTimeline() {
@@ -231,7 +233,7 @@ function conditionsPanel(c) {
   return h('div', { class: 'cond' },
     row(t('swell'), h('span', {}, `${c.swell_height ?? '–'} m · ${c.swell_period ?? '–'} s `, arrow(c.swell_direction), ` ${compass(c.swell_direction)}`)),
     row(t('waves'), `${c.wave_height ?? '–'} m · ${c.wave_period ?? '–'} s`),
-    row(t('wind'), h('span', {}, `${c.wind_speed ?? '–'} km/h (${c.wind_gusts ?? '–'}) `, arrow(c.wind_direction), ` ${compass(c.wind_direction)}`)),
+    row(t('wind'), h('span', {}, `${c.wind_speed ?? '–'} km/h (${c.wind_gusts ?? '–'}) `, arrow(c.wind_direction), ` ${compass(c.wind_direction)}`, c.wind_state ? ` · ${t(WS[c.wind_state])}` : '')),
     row(t('tide'), `${c.tide_height ?? '–'} m ${c.tide_trend ? '· ' + t(c.tide_trend) : ''}`),
     c.tide_day_min != null ? h('div', { class: 'muted small' }, `${t('tide_range')}: ${c.tide_day_min} → ${c.tide_day_max} m`) : null,
     tideCurve(c),
@@ -300,55 +302,117 @@ function defaultSpot() {
   return [...S.favSpots][0] || S.spots[0]?.id || null;
 }
 
-// ================= subir (varios videos) =================
+// ================= forecast del día (tabla tipo surf forecast) =================
+const WS = { onshore: 'ws_on', 'cross-on': 'ws_crosson', cross: 'ws_cross', 'cross-off': 'ws_crossoff', offshore: 'ws_off' };
+const windBg = (k) => (k == null ? 'transparent' : k < 10 ? '#cfeed6' : k < 20 ? '#e8f2b0' : k < 30 ? '#f7dc95' : k < 40 ? '#f4b385' : '#ec8f80');
+const waveBg = (m) => (m == null ? 'transparent' : `rgba(42,127,140,${Math.min(0.85, 0.12 + m * 0.32).toFixed(2)})`);
+const isPipa = (spotId) => { const s = S.spots.find((x) => x.id === spotId); return s && Math.abs(s.lat + 6.22) < 0.15 && Math.abs(s.lon + 35.04) < 0.15; };
+
+function forecastTable(c, atTime, spotId) {
+  if (!c?.day?.length) return h('p', { class: 'muted small' }, t('no_conditions'));
+  const hh = atTime ? parseInt(atTime.slice(0, 2), 10) + parseInt(atTime.slice(3, 5), 10) / 60 : null;
+  const hi = hh == null ? -1 : Math.min(7, Math.floor(hh / 3)); // franja de 3 h que contiene la hora
+  const td = (i, ...k) => h('td', { class: i === hi ? 'now' : '' }, ...k);
+  const curve = c.tide_curve?.length ? (() => {
+    const vals = c.tide_curve.map(([, v]) => v).filter((v) => v != null);
+    const lo = Math.min(...vals), hi2 = Math.max(...vals), W = 800, H = 46;
+    const d = c.tide_curve.map(([, v], i) => `${i ? 'L' : 'M'}${((i + 0.5) / 24 * W).toFixed(1)},${(H - 4 - ((v ?? lo) - lo) / Math.max(0.01, hi2 - lo) * (H - 8)).toFixed(1)}`).join(' ');
+    const x = hh == null ? null : ((hh + 0.5) / 24) * W;
+    return h('div', { html: `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="fc-tide"><path d="${d} L${W},${H} L0,${H} Z" class="area"/><path d="${d}" class="line"/>${x != null ? `<line x1="${x}" x2="${x}" y1="0" y2="${H}"/>` : ''}</svg>` });
+  })() : null;
+  return h('div', { class: 'fc' },
+    h('div', { class: 'fc-scroll' }, h('table', { class: 'fc-table' },
+      h('thead', {}, h('tr', {}, h('th', {}, ''), c.day.map((d, i) => h('th', { class: i === hi ? 'now' : '' }, `${String(d.h).padStart(2, '0')}h`)))),
+      h('tbody', {},
+        h('tr', {}, h('th', {}, t('waves'), h('small', {}, 'm')), c.day.map((d, i) => td(i, h('span', { class: 'cell', style: `background:${waveBg(d.wave)};color:${d.wave > 1.2 ? '#fff' : 'inherit'}` }, d.wave != null ? d.wave.toFixed(1) : '–')))),
+        h('tr', {}, h('th', {}, t('swell'), h('small', {}, 'm · s')), c.day.map((d, i) => td(i, h('div', { class: 'stack' }, arrow(d.swell_dir), h('b', {}, d.swell != null ? d.swell.toFixed(1) : '–'), h('small', {}, d.period != null ? d.period + 's' : ''))))),
+        h('tr', {}, h('th', {}, t('wind'), h('small', {}, 'km/h')), c.day.map((d, i) => td(i, h('span', { class: 'cell', style: `background:${windBg(d.wind)}` }, arrow(d.wind_dir), ' ', d.wind ?? '–')))),
+        h('tr', {}, h('th', {}, t('wind_state')), c.day.map((d, i) => td(i, h('small', { class: 'ws ws-' + (d.wind_state || '') }, d.wind_state ? t(WS[d.wind_state]) : '–')))),
+        h('tr', {}, h('th', {}, t('tide'), h('small', {}, 'm')), h('td', { colspan: 8, class: 'tide-cell' }, curve))))),
+    h('p', { class: 'fc-source' }, t('fc_source'), ' ',
+      isPipa(spotId) ? h('a', { href: 'https://www.surf-forecast.com/breaks/Praia-de-Pipa/forecasts/latest', target: '_blank', rel: 'noopener' }, t('fc_compare'), ' ↗') : null));
+}
+
+// ================= subir: una sesión = un día =================
 function viewUpload() {
   const root = $app();
-  const shared = { surfer_email: S.me.email, surfer_name: '', spot_id: defaultSpot(), board_id: store.get('sc_last_board', null) };
+  const shared = { surfer_email: S.me.email, surfer_name: '', spot_id: defaultSpot(), board_id: store.get('sc_last_board', null), date: '', time: '' };
   const items = [];
   const list = h('div', { class: 'queue' });
   const status = h('div', { class: 'status muted' });
   const uploadBtn = h('button', { class: 'btn big', disabled: true }, t('up_save'));
-  let busy = false;
+  const fcBox = h('div', { class: 'session-fc' });
+  const dateWarn = h('p', { class: 'small date-warn', hidden: true });
+  let busy = false, userSetDate = false;
 
+  const dateIn = h('input', { type: 'date', max: localIso(new Date()).slice(0, 10), onchange: (e) => { shared.date = e.target.value; userSetDate = true; changed(); } });
+  const timeIn = h('input', { type: 'time', step: 900, onchange: (e) => { shared.time = e.target.value; changed(); } });
   const otherName = h('input', { type: 'text', placeholder: t('up_other_name'), hidden: true, oninput: (e) => (shared.surfer_name = e.target.value) });
   const boardBox = boardPicker(() => shared.surfer_email || S.me.email, shared.board_id, (id) => { shared.board_id = id; });
   const surferSel = h('select', { onchange: (e) => { shared.surfer_email = e.target.value; otherName.hidden = !!shared.surfer_email; boardBox.redraw(); } },
     S.members.map((m) => h('option', { value: m.email, selected: m.email === S.me.email }, m.email === S.me.email ? `${m.name} (${t('me')})` : m.name)),
     h('option', { value: '' }, t('up_other_surfer')));
-  const spotBox = spotPicker(shared.spot_id, (id) => { shared.spot_id = id; items.forEach(fetchCond); });
+  const spotBox = spotPicker(shared.spot_id, (id) => { shared.spot_id = id; changed(); });
+
+  // hora de cada video: la del archivo si es confiable y del mismo día; si no, la de la sesión
+  const videoTime = (it) => (it.fileTime && it.fileDate === shared.date ? it.fileTime : shared.time || '');
+  const recordedAt = (it) => (shared.date && videoTime(it) ? `${shared.date}T${videoTime(it)}` : null);
+
+  let fcKey = '';
+  async function changed() {
+    items.forEach((it) => it.draw());
+    refreshBtn();
+    const at = shared.date && shared.time ? `${shared.date}T${shared.time}` : null;
+    if (!at || !shared.spot_id) { fcBox.replaceChildren(h('p', { class: 'muted small' }, t('fc_need_date'))); return; }
+    const key = shared.spot_id + at; if (key === fcKey) return; fcKey = key;
+    fcBox.replaceChildren(h('p', { class: 'muted small' }, h('span', { class: 'spinner' }), ' ', t('fc_loading')));
+    try { const c = await api(`conditions?spot=${shared.spot_id}&at=${at}`); if (fcKey === key) fcBox.replaceChildren(h('h3', {}, t('fc_title')), forecastTable(c, shared.time, shared.spot_id)); }
+    catch { fcBox.replaceChildren(h('p', { class: 'muted small' }, '–')); }
+  }
+
+  // propone el día y la hora de la sesión a partir de los archivos confiables
+  function suggestSession() {
+    const reliable = items.filter((i) => i.fileDate);
+    const days = [...new Set(reliable.map((i) => i.fileDate))];
+    if (!userSetDate && days.length) {
+      shared.date = days.sort()[0]; dateIn.value = shared.date;
+      const first = reliable.filter((i) => i.fileDate === shared.date).map((i) => i.fileTime).sort()[0];
+      if (first && !shared.time) { shared.time = first; timeIn.value = first; }
+    }
+    const unreliable = items.filter((i) => i.dateChecked && !i.fileDate);
+    dateWarn.hidden = !(days.length > 1 || unreliable.length);
+    dateWarn.textContent = days.length > 1 ? t('date_multi_days') : unreliable.length ? t('date_no_meta') : '';
+    changed();
+  }
 
   const refreshBtn = () => {
     const pending = items.filter((i) => i.status === 'ready' || i.status === 'error');
-    uploadBtn.disabled = busy || !pending.length || items.some((i) => i.status === 'analyzing');
-    uploadBtn.textContent = pending.length > 1 ? t('up_save_n').replace('{n}', pending.length) : t('up_save');
+    const missing = !shared.date || !shared.time;
+    uploadBtn.disabled = busy || !pending.length || items.some((i) => i.status === 'analyzing') || missing;
+    uploadBtn.textContent = missing && items.length ? t('up_need_date') : pending.length > 1 ? t('up_save_n').replace('{n}', pending.length) : t('up_save');
     uploadBtn.hidden = !items.length;
   };
-
-  async function fetchCond(it) {
-    if (!it.recorded_at || !shared.spot_id) { it.cond = null; it.draw(); return; }
-    const key = shared.spot_id + it.recorded_at;
-    it.condKey = key;
-    try { const c = await api(`conditions?spot=${shared.spot_id}&at=${it.recorded_at}`); if (it.condKey === key) { it.cond = c; it.draw(); } } catch {}
-  }
 
   function card(it) {
     const el = h('article', { class: 'qcard card' });
     const player = h('video', { class: 'qplayer', src: it.url, controls: true, playsInline: true, preload: 'metadata' });
     player.muted = true;
     it.player = player;
-    const dateIn = h('input', { type: 'datetime-local', onchange: (e) => { it.recorded_at = e.target.value.slice(0, 16); fetchCond(it); } });
-    const noteBox = h('textarea', { rows: 2, placeholder: t('note_placeholder'), oninput: (e) => (it.note = e.target.value) });
-    const waveIn = starInput(it.wave_rating, (n) => (it.wave_rating = n));
-    const surfIn = starInput(it.surf_rating, (n) => (it.surf_rating = n));
+    const noteBox = h('textarea', { rows: 2, placeholder: t('note_placeholder'), hidden: true, oninput: (e) => (it.note = e.target.value) });
     let noteOpen = false;
+    const removeBtn = h('button', { class: 'icon-btn', title: t('remove'), onclick: () => { items.splice(items.indexOf(it), 1); el.remove(); URL.revokeObjectURL(it.url); suggestSession(); } }, '✕');
+    const timeLine = h('p', { class: 'small qtime' });
     const dynamic = h('div', { class: 'qdyn' });
     it.draw = () => {
-      dateIn.value = it.recorded_at || '';
-      const srcHint = { meta: t('date_meta'), whatsapp: t('date_whatsapp'), name: t('date_name'), modified: t('date_modified') }[it.dateSource] || t('date_unknown');
-      hint.textContent = srcHint;
+      if (!it.dateChecked) timeLine.replaceChildren(h('span', { class: 'spinner' }), ' ', t('reading_date'));
+      else {
+        const tm = videoTime(it);
+        const src = it.fileTime && it.fileDate === shared.date ? t('time_from_file') : t('time_from_session');
+        timeLine.replaceChildren(h('b', {}, tm || '–:–'), ' ', h('span', { class: 'muted' }, src),
+          it.fileDate && shared.date && it.fileDate !== shared.date ? h('span', { class: 'err' }, ' · ', t('date_other_day').replace('{d}', fmtDate(it.fileDate + 'T12:00', { dateStyle: 'medium' }))) : null);
+      }
       dynamic.replaceChildren(
-        it.status === 'analyzing' ? h('p', { class: 'small muted' }, it.progressText || t('up_analyzing')) : h('div', { class: 'qflags' }, flagChips(it.flags)),
-        it.cond ? h('p', { class: 'small muted' }, condLine(it.cond)) : null,
+        it.status === 'analyzing' ? h('p', { class: 'small muted' }, h('span', { class: 'spinner' }), ' ', it.progressText || t('up_analyzing')) : h('div', { class: 'qflags' }, flagChips(it.flags)),
         h('div', { class: 'qactions' },
           h('button', { type: 'button', class: 'link-btn', onclick: () => { noteOpen = !noteOpen; noteBox.hidden = !noteOpen; it.draw(); if (noteOpen) noteBox.focus(); } }, noteOpen ? t('hide_note') : '+ ' + t('add_note')),
           h('button', { type: 'button', class: 'link-btn', title: t('up_highlight_help'), onclick: () => { it.highlight = player.currentTime; it.draw(); } }, '⟲ ', t('loop_here'), ` (${fmtSec(it.highlight || 0)})`)),
@@ -357,37 +421,38 @@ function viewUpload() {
         it.status === 'error' ? h('p', { class: 'err small' }, t('up_error'), ': ', it.error) : null);
       removeBtn.hidden = it.status === 'uploading' || it.status === 'done';
     };
-    const hint = h('small', { class: 'muted' });
-    const removeBtn = h('button', { class: 'icon-btn', title: t('remove'), onclick: () => { items.splice(items.indexOf(it), 1); el.remove(); URL.revokeObjectURL(it.url); refreshBtn(); } }, '✕');
-    noteBox.hidden = true;
     el.append(player, h('div', { class: 'qbody' },
       h('div', { class: 'qhead' }, h('strong', { class: 'fname', title: it.file.name }, it.file.name), removeBtn),
-      h('label', { class: 'field' }, h('span', {}, t('date')), dateIn, hint),
+      timeLine,
       h('div', { class: 'rate-row' },
-        h('div', { class: 'field' }, h('span', {}, t('rating_wave')), waveIn),
-        h('div', { class: 'field' }, h('span', {}, t('rating_surf')), surfIn)),
+        h('div', { class: 'field' }, h('span', {}, t('rating_wave')), starInput(it.wave_rating, (n) => (it.wave_rating = n))),
+        h('div', { class: 'field' }, h('span', {}, t('rating_surf')), starInput(it.surf_rating, (n) => (it.surf_rating = n)))),
       dynamic, noteBox));
     it.draw();
     return el;
   }
 
-  // analiza de a uno para no saturar el navegador
+  // 1) fecha de todos los archivos de inmediato; 2) detección del surfista de a uno
   let analyzing = Promise.resolve();
   function addFiles(files) {
+    const added = [];
     for (const file of files) {
       if (!file.type.startsWith('video/') && !/\.(mp4|mov|m4v|webm)$/i.test(file.name)) continue;
       const it = { file, url: URL.createObjectURL(file), status: 'analyzing', wave_rating: null, surf_rating: null, note: '', flags: [], highlight: 0 };
-      items.push(it);
+      items.push(it); added.push(it);
       list.append(card(it));
-      analyzing = analyzing.then(() => analyze(it));
     }
     refreshBtn();
+    Promise.all(added.map(async (it) => {
+      const d = await detectRecordedAt(it.file).catch(() => null);
+      // solo se confía en la fecha del propio archivo o de nombres de cámara/celular; WhatsApp y "modificado" no sirven
+      if (d && (d.source === 'meta' || d.source === 'name')) { const iso = localIso(d.date); it.fileDate = iso.slice(0, 10); it.fileTime = iso.slice(11, 16); }
+      it.dateChecked = true; it.draw();
+    })).then(suggestSession);
+    for (const it of added) analyzing = analyzing.then(() => analyze(it));
   }
   async function analyze(it) {
     if (!items.includes(it)) return;
-    const d = await detectRecordedAt(it.file).catch(() => null);
-    if (d) { it.recorded_at = localIso(d.date); it.dateSource = d.source; }
-    it.draw(); fetchCond(it);
     try {
       const v = await loadVideo(it.url);
       it.meta = { duration: v.duration, width: v.videoWidth, height: v.videoHeight, size_bytes: it.file.size };
@@ -405,7 +470,7 @@ function viewUpload() {
     it.status = 'uploading'; it.progress = 0; it.draw();
     const ext = (it.file.name.split('.').pop() || 'mp4').toLowerCase();
     const body = { surfer_email: shared.surfer_email || null, surfer_name: shared.surfer_email ? null : shared.surfer_name, spot_id: shared.spot_id, board_id: shared.board_id || null,
-      recorded_at: it.recorded_at || null, wave_rating: it.wave_rating, surf_rating: it.surf_rating, note: it.note,
+      recorded_at: recordedAt(it), wave_rating: it.wave_rating, surf_rating: it.surf_rating, note: it.note,
       ...(it.meta || {}), subject_ratio: it.ratio ?? null, flags: it.flags, highlight_at: it.highlight };
     const res = await fetch('/api/videos', { method: 'POST', headers: { 'content-type': 'application/json', 'x-ext': ext }, body: JSON.stringify(body) });
     const { id, keys, error } = await res.json(); if (!id) throw new Error(error || res.status);
@@ -436,22 +501,25 @@ function viewUpload() {
   const fileIn = h('input', { type: 'file', accept: 'video/*,.mov,.mp4', multiple: true, hidden: true, onchange: (e) => { addFiles(e.target.files); e.target.value = ''; } });
   const drop = h('div', { class: 'drop', tabindex: 0, role: 'button', onclick: () => fileIn.click(), onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') fileIn.click(); } },
     h('div', { class: 'drop-icon' }, '⇪'), h('strong', {}, t('drop_title')), h('span', { class: 'muted small' }, t('drop_help')), fileIn);
-  // arrastrar y soltar en cualquier parte de la página
   root.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
   root.ondragleave = (e) => { if (!e.relatedTarget || !root.contains(e.relatedTarget)) drop.classList.remove('over'); };
   root.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); addFiles(e.dataTransfer.files); };
 
-  refreshBtn();
+  refreshBtn(); changed();
   root.replaceChildren(nav('nav_upload'), h('main', { class: 'wrap' },
     h('h1', {}, t('up_title')),
-    drop,
     h('section', { class: 'card shared' },
-      h('p', { class: 'small muted' }, t('shared_help')),
-      h('div', { class: 'shared-grid' },
-        h('label', { class: 'field' }, h('span', {}, t('surfer')), surferSel, otherName),
-        h('div', { class: 'field' }, h('span', {}, t('spot')), spotBox),
-        h('div', { class: 'field' }, h('span', {}, t('board')), boardBox))),
-    list, status, uploadBtn));
+      h('h3', { class: 'step' }, h('span', { class: 'num' }, '1'), t('session_title')),
+      h('div', { class: 'session-row' },
+        h('label', { class: 'field' }, h('span', {}, t('session_day')), dateIn),
+        h('label', { class: 'field' }, h('span', {}, t('session_time')), timeIn),
+        h('label', { class: 'field' }, h('span', {}, t('surfer')), surferSel, otherName)),
+      dateWarn,
+      h('div', { class: 'field' }, h('span', {}, t('spot')), spotBox),
+      h('div', { class: 'field' }, h('span', {}, t('board')), boardBox),
+      fcBox),
+    h('h3', { class: 'step' }, h('span', { class: 'num' }, '2'), t('videos_step')),
+    drop, list, status, uploadBtn));
 }
 
 // ================= detalle =================
@@ -569,7 +637,9 @@ async function viewDetail(id) {
   renderAll(); renderSide();
   root.replaceChildren(nav(''), h('main', { class: 'wrap detail' },
     h('a', { href: '#/', class: 'back' }, '← ', t('back')),
-    h('div', { class: 'dgrid' }, h('div', {}, player, likeBox, boardEl, commentsEl), side)));
+    h('div', { class: 'dgrid' }, h('div', {}, player, likeBox,
+      v.conditions?.day ? h('details', { class: 'fc-details' }, h('summary', {}, t('fc_title'), ' · ', h('span', { class: 'muted small' }, condLine(v.conditions))), forecastTable(v.conditions, (v.recorded_at || '').slice(11, 16), v.spot_id)) : null,
+      boardEl, commentsEl), side)));
 }
 
 // ================= amigos =================

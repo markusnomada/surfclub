@@ -204,7 +204,7 @@ export async function onRequest(context) {
       const id = (slug(name) || 'pico') + '-' + uid().slice(0, 4);
       // el modelo de oleaje necesita un punto en el mar: en Pipa la costa mira al este
       const fcLat = hasCoords ? lat : -6.23, fcLon = hasCoords ? lon : -34.98;
-      await env.DB.prepare('INSERT INTO spots (id, name, lat, lon, fc_lat, fc_lon, sort, created_by) VALUES (?, ?, ?, ?, ?, ?, 50, ?)')
+      await env.DB.prepare('INSERT INTO spots (id, name, lat, lon, fc_lat, fc_lon, sort, created_by, facing) VALUES (?, ?, ?, ?, ?, ?, 50, ?, 45)')
         .bind(id, name, lat, lon, fcLat, fcLon, me.email).run();
       await env.DB.prepare('INSERT OR IGNORE INTO favorite_spots (email, spot_id) VALUES (?, ?)').bind(me.email, id).run();
       return json(await loadSpot(env, id));
