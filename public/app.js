@@ -372,6 +372,48 @@ function forecastTable(c, atTime, spotId, opts = {}) {
   return box;
 }
 
+// ================= selector del loop: inicio y fin =================
+const fmtSecD = (x) => `${Math.floor(x / 60)}:${(x % 60).toFixed(1).padStart(4, '0')}`;
+const LOOP_MIN = 1, LOOP_MAX = 10;
+// Dos manillas sobre la línea del video. Al moverlas, el reproductor salta a ese punto;
+// "Probar" reproduce el tramo en bucle.
+function loopRange(player, sel, onChange) {
+  const box = h('div', { class: 'loop-range' });
+  let dur = player.duration || 0, testing = false;
+  const a = h('input', { type: 'range', min: 0, step: 0.1, 'aria-label': t('loop_start') });
+  const b = h('input', { type: 'range', min: 0, step: 0.1, 'aria-label': t('loop_end') });
+  const fill = h('div', { class: 'lr-fill' });
+  const label = h('span', { class: 'lr-label' });
+  const testBtn = h('button', { type: 'button', class: 'chip lr-test' });
+  const clamp = (moved) => {
+    let s = Math.max(0, Math.min(sel.start, dur - LOOP_MIN)), e = Math.max(sel.end, s + LOOP_MIN);
+    if (e - s > LOOP_MAX) { if (moved === 'start') e = s + LOOP_MAX; else s = e - LOOP_MAX; }
+    e = Math.min(e, dur); if (e - s < LOOP_MIN) s = Math.max(0, e - LOOP_MIN);
+    sel.start = Math.round(s * 10) / 10; sel.end = Math.round(e * 10) / 10;
+  };
+  const paint = () => {
+    a.max = b.max = dur; a.value = sel.start; b.value = sel.end;
+    const p = (x) => (dur ? (x / dur) * 100 : 0);
+    fill.style.left = p(sel.start) + '%'; fill.style.width = p(sel.end - sel.start) + '%';
+    label.textContent = `${fmtSecD(sel.start)} → ${fmtSecD(sel.end)} · ${(sel.end - sel.start).toFixed(1)} s`;
+    testBtn.textContent = testing ? '■ ' + t('loop_stop') : '▶ ' + t('loop_test');
+  };
+  const move = (which) => (e) => {
+    sel[which] = Number(e.target.value); clamp(which); paint();
+    testing = false; player.pause(); player.currentTime = sel[which];
+    onChange && onChange(sel);
+  };
+  a.oninput = move('start'); b.oninput = move('end');
+  player.addEventListener('timeupdate', () => { if (testing && player.currentTime >= sel.end) player.currentTime = sel.start; });
+  testBtn.onclick = () => { testing = !testing; if (testing) { player.currentTime = sel.start; player.play(); } else player.pause(); paint(); };
+  const init = () => { dur = player.duration || dur; if (!dur) return; clamp('start'); paint(); };
+  if (player.readyState >= 1) init(); else player.addEventListener('loadedmetadata', init, { once: true });
+  box.append(h('div', { class: 'lr-track' }, h('div', { class: 'lr-rail' }), fill, a, b), h('div', { class: 'lr-foot' }, h('span', { class: 'small muted' }, t('loop_label')), label, testBtn));
+  box.refresh = () => { clamp('start'); paint(); };
+  paint();
+  return box;
+}
+
 // ================= subir: una sesión = un día =================
 function viewUpload() {
   const root = $app();
@@ -458,13 +500,14 @@ function viewUpload() {
         it.status === 'analyzing' ? h('p', { class: 'small muted' }, h('span', { class: 'spinner' }), ' ', it.progressText || t('up_analyzing')) : h('div', { class: 'qflags' }, flagChips(it.flags)),
         h('div', { class: 'qactions' },
           h('button', { type: 'button', class: 'link-btn', onclick: () => { noteOpen = !noteOpen; noteBox.hidden = !noteOpen; it.draw(); if (noteOpen) noteBox.focus(); } }, noteOpen ? t('hide_note') : '+ ' + t('add_note')),
-          h('button', { type: 'button', class: 'link-btn', title: t('up_highlight_help'), onclick: () => { it.highlight = player.currentTime; it.draw(); } }, '⟲ ', t('loop_here'), ` (${fmtSec(it.highlight || 0)})`)),
+),
         it.status === 'uploading' ? h('progress', { max: 1, value: it.progress || 0 }) : null,
         it.status === 'done' ? h('p', { class: 'ok small' }, '✓ ', t('up_done_one')) : null,
         it.status === 'error' ? h('p', { class: 'err small' }, t('up_error'), ': ', it.error) : null);
       removeBtn.hidden = it.status === 'uploading' || it.status === 'done';
     };
-    el.append(player, h('div', { class: 'qbody' },
+    it.range = loopRange(player, it.loop);
+    el.append(h('div', { class: 'qmedia' }, player, it.range), h('div', { class: 'qbody' },
       h('div', { class: 'qhead' }, h('strong', { class: 'fname', title: it.file.name }, it.file.name), removeBtn),
       timeLine,
       h('div', { class: 'rate-row' },
@@ -481,7 +524,7 @@ function viewUpload() {
     const added = [];
     for (const file of files) {
       if (!file.type.startsWith('video/') && !/\.(mp4|mov|m4v|webm)$/i.test(file.name)) continue;
-      const it = { file, url: URL.createObjectURL(file), status: 'analyzing', wave_rating: null, surf_rating: null, note: '', flags: [], highlight: 0 };
+      const it = { file, url: URL.createObjectURL(file), status: 'analyzing', wave_rating: null, surf_rating: null, note: '', flags: [], loop: { start: 0, end: 4 } };
       items.push(it); added.push(it);
       list.append(card(it));
     }
@@ -501,11 +544,12 @@ function viewUpload() {
       it.meta = { duration: v.duration, width: v.videoWidth, height: v.videoHeight, size_bytes: it.file.size };
       const a = await detectSubject(v, (p) => { it.progressText = `${t('up_detect')} ${Math.round(p * 100)}%`; it.draw(); });
       it.ratio = a.ratio;
-      it.highlight = Math.max(0, a.bestTime - 1);
+      it.loop.start = Math.max(0, a.bestTime - 1.5); it.loop.end = it.loop.start + 4;
+      if (it.range) it.range.refresh();
       it.flags = computeFlags(a, { width: it.meta.width, height: it.meta.height, size: it.file.size, duration: it.meta.duration });
       v.removeAttribute('src'); v.load();
     } catch (e) { console.warn(e); }
-    if (it.player) it.player.currentTime = it.highlight;
+    if (it.player) it.player.currentTime = it.loop.start;
     it.status = 'ready'; it.draw(); refreshBtn();
   }
 
@@ -514,10 +558,10 @@ function viewUpload() {
     const ext = (it.file.name.split('.').pop() || 'mp4').toLowerCase();
     const body = { surfer_email: shared.surfer_email || null, surfer_name: shared.surfer_email ? null : shared.surfer_name, spot_id: shared.spot_id, board_id: shared.board_id || null,
       recorded_at: recordedAt(it), conditions: shared.conditions ? applySlot(shared.conditions, videoTime(it)) : undefined, wave_rating: it.wave_rating, surf_rating: it.surf_rating, note: it.note,
-      ...(it.meta || {}), subject_ratio: it.ratio ?? null, flags: it.flags, highlight_at: it.highlight };
+      ...(it.meta || {}), subject_ratio: it.ratio ?? null, flags: it.flags, highlight_at: it.loop.start, loop_end: it.loop.end };
     const res = await fetch('/api/videos', { method: 'POST', headers: { 'content-type': 'application/json', 'x-ext': ext }, body: JSON.stringify(body) });
     const { id, keys, error } = await res.json(); if (!id) throw new Error(error || res.status);
-    const pv = await makePreview(it.url, it.highlight);
+    const pv = await makePreview(it.url, it.loop.start, it.loop.end - it.loop.start);
     const previewKey = `videos/${id}/preview.${pv.ext}`;
     await api(`upload/put?key=${encodeURIComponent(previewKey)}`, { method: 'PUT', raw: pv.preview });
     await api(`upload/put?key=${encodeURIComponent(keys.poster)}`, { method: 'PUT', raw: pv.poster });
@@ -662,17 +706,7 @@ async function viewDetail(id) {
     h('h3', {}, t('conditions')), conditionsPanel(v.conditions),
     v.can_edit ? h('div', { class: 'actions' },
       h('button', { class: 'btn ghost', onclick: editForm }, t('edit')),
-      h('button', { class: 'btn ghost', title: t('regen_help'), onclick: async (e) => {
-        const btn = e.currentTarget; btn.disabled = true; btn.textContent = t('regen_working');
-        try {
-          const pv = await makePreview(media(v.original_key), player.currentTime);
-          const key = `videos/${v.id}/preview.${pv.ext}`;
-          await api(`upload/put?key=${encodeURIComponent(key)}`, { method: 'PUT', raw: pv.preview });
-          await api(`upload/put?key=${encodeURIComponent(`videos/${v.id}/poster.jpg`)}`, { method: 'PUT', raw: pv.poster });
-          await api('videos/' + v.id, { method: 'PATCH', body: { preview_key: key, highlight_at: player.currentTime } });
-          S.videos = null; btn.textContent = '✓ ' + t('regen_done');
-        } catch (x) { btn.textContent = x.message; btn.disabled = false; }
-      } }, '⟲ ', t('regen')),
+      h('button', { class: 'btn ghost', onclick: () => { loopEditor.hidden = !loopEditor.hidden; } }, '⟲ ', t('regen')),
       h('button', { class: 'btn danger', onclick: async () => { if (!confirm(t('confirm_delete'))) return; await api('videos/' + v.id, { method: 'DELETE' }); S.videos = null; location.hash = '#/'; } }, t('delete'))) : null);
 
   function editForm() {
@@ -688,11 +722,30 @@ async function viewDetail(id) {
         h('button', { class: 'btn ghost', onclick: renderSide }, t('cancel'))));
   }
 
+  // editor del loop (solo dueño)
+  const loopSel = { start: v.highlight_at || 0, end: v.loop_end || (v.highlight_at || 0) + 4 };
+  const loopMsg = h('span', { class: 'small muted' });
+  const loopEditor = h('div', { class: 'card loop-editor', hidden: true },
+    h('strong', {}, t('regen')), h('p', { class: 'small muted' }, t('regen_help')),
+    loopRange(player, loopSel),
+    h('div', { class: 'actions' }, h('button', { class: 'btn small', onclick: async (e) => {
+      const btn = e.currentTarget; btn.disabled = true; loopMsg.textContent = t('regen_working');
+      try {
+        const pv = await makePreview(media(v.original_key), loopSel.start, loopSel.end - loopSel.start);
+        const key = `videos/${v.id}/preview.${pv.ext}`;
+        await api(`upload/put?key=${encodeURIComponent(key)}`, { method: 'PUT', raw: pv.preview });
+        await api(`upload/put?key=${encodeURIComponent(`videos/${v.id}/poster.jpg`)}`, { method: 'PUT', raw: pv.poster });
+        await api('videos/' + v.id, { method: 'PATCH', body: { preview_key: key, highlight_at: loopSel.start, loop_end: loopSel.end } });
+        S.videos = null; loopMsg.textContent = '✓ ' + t('regen_done'); loopEditor.hidden = true;
+      } catch (x) { loopMsg.textContent = x.message; }
+      btn.disabled = false;
+    } }, t('save_loop')), h('button', { class: 'link-btn', onclick: () => { loopEditor.hidden = true; } }, t('cancel')), loopMsg));
+
   const renderAll = () => { renderPostits(); renderComments(); renderLikes(); };
   renderAll(); renderSide();
   root.replaceChildren(nav(''), h('main', { class: 'wrap detail' },
     h('a', { href: '#/', class: 'back' }, '← ', t('back')),
-    h('div', { class: 'dgrid' }, h('div', {}, player, likeBox,
+    h('div', { class: 'dgrid' }, h('div', {}, player, v.can_edit ? loopEditor : null, likeBox,
       v.conditions?.day ? h('details', { class: 'fc-details' }, h('summary', {}, t('fc_title'), ' · ', h('span', { class: 'muted small' }, condLine(v.conditions))), forecastTable(v.conditions, (v.recorded_at || '').slice(11, 16), v.spot_id, v.can_edit ? { onSave: async (next) => { await api('videos/' + v.id, { method: 'PATCH', body: { conditions: next } }); v.conditions = next; S.videos = null; renderSide(); } } : {})) : null,
       boardEl, commentsEl), side)));
 }

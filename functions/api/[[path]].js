@@ -10,7 +10,7 @@ const clampRating = (v) => (v === null || v === undefined || v === '' ? null : M
 const slug = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
 
 const VIDEO_FIELDS = ['surfer_email', 'surfer_name', 'board_id', 'spot_id', 'recorded_at', 'wave_rating', 'surf_rating',
-  'duration', 'width', 'height', 'size_bytes', 'subject_ratio', 'flags', 'highlight_at'];
+  'duration', 'width', 'height', 'size_bytes', 'subject_ratio', 'flags', 'highlight_at', 'loop_end'];
 
 function cleanVideoInput(body) {
   const v = {};

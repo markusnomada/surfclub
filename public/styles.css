@@ -342,3 +342,23 @@ table.metrics td { padding: 6px 4px; border-bottom: 1px dashed var(--line); }
 .fc-edit-btn { margin-left: 8px; }
 .edited-badge { background: #fff4e0; color: #7a4a0b; padding: 2px 8px; border-radius: 999px; }
 @media (max-width: 860px) { .metrics-form { grid-template-columns: 1fr 1fr; } }
+
+/* ---------- selector de loop (inicio-fin) ---------- */
+.qmedia { display: grid; gap: 8px; align-content: start; }
+.loop-range { display: grid; gap: 6px; }
+.lr-track { position: relative; height: 28px; }
+.lr-rail { position: absolute; left: 0; right: 0; top: 11px; height: 6px; border-radius: 3px; background: #dfe6e3; }
+.lr-fill { position: absolute; top: 9px; height: 10px; border-radius: 4px; background: var(--sun); box-shadow: 0 0 0 1px #d99a1e inset; }
+.lr-track input[type=range] { position: absolute; inset: 0; width: 100%; margin: 0; background: none; pointer-events: none; -webkit-appearance: none; appearance: none; height: 28px; }
+.lr-track input[type=range]::-webkit-slider-runnable-track { background: none; height: 28px; }
+.lr-track input[type=range]::-moz-range-track { background: none; }
+.lr-track input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; pointer-events: auto; width: 16px; height: 26px; border-radius: 5px; background: var(--ink); border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); cursor: ew-resize; margin-top: 1px; }
+.lr-track input[type=range]::-moz-range-thumb { pointer-events: auto; width: 14px; height: 24px; border-radius: 5px; background: var(--ink); border: 2px solid #fff; cursor: ew-resize; }
+.lr-track input[type=range]:focus-visible::-webkit-slider-thumb { outline: 2px solid var(--sun); }
+.lr-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lr-label { font-variant-numeric: tabular-nums; font-size: .85rem; font-weight: 600; }
+.lr-test { margin-left: auto; padding: 3px 10px; }
+.loop-editor { margin-top: 10px; display: grid; gap: 8px; }
+.loop-editor[hidden] { display: none; }
+.side .actions { flex-wrap: wrap; }
+.side .actions .btn { white-space: nowrap; padding: 9px 12px; }
