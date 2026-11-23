@@ -1,0 +1,12 @@
+{
+  "name": "surfclub",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler pages dev",
+    "db:local": "wrangler d1 migrations apply surfclub --local"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}

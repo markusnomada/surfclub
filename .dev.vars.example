@@ -1,0 +1,2 @@
+# Copia este archivo como .dev.vars para desarrollo local (no se sube a git).
+DEV_USER=markuszl5@gmail.com
