@@ -108,7 +108,7 @@ function nav(active) {
   const link = (hash, key) => h('a', { href: hash, class: active === key ? 'active' : '' }, t(key));
   return h('header', { class: 'top' },
     h('a', { href: '#/', class: 'brand' }, h('span', { class: 'mark' }, '≈'), t('brand')),
-    h('nav', {}, link('#/', 'nav_timeline'), link('#/pizarra', 'nav_board'), link('#/subir', 'nav_upload'), link('#/amigos', 'nav_friends')),
+    h('nav', {}, link('#/', 'nav_timeline'), link('#/subir', 'nav_upload'), link('#/amigos', 'nav_friends')),
     h('a', { href: '#/perfil', class: 'me-link' + (active === 'nav_profile' ? ' active' : ''), title: t('nav_profile') }, avatar(S.me, 30)));
 }
 
@@ -161,11 +161,16 @@ function videoCard(v) {
 }
 
 function dayConditions(list) {
-  const v0 = list.find((v) => v.conditions && v.conditions.swell_height != null);
+  const v0 = list.find((v) => v.conditions && v.conditions.day) || list.find((v) => v.conditions && v.conditions.swell_height != null);
   if (!v0) return null;
   const c = v0.conditions;
+  const mine = list.find((v) => v.uploader_email === S.me.email || v.surfer_email === S.me.email);
+  const onSave = mine ? async (next) => {
+    await api('videos/' + mine.id, { method: 'PATCH', body: { conditions: next } });
+    for (const v of list) if (v.spot_id === mine.spot_id && (v.uploader_email === S.me.email || v.surfer_email === S.me.email)) v.conditions = next;
+  } : null;
   return h('details', { class: 'daycond' }, h('summary', { class: 'muted' }, condLine(c), c.wind_state ? ` (${t(WS[c.wind_state])})` : '', ' · ', h('span', { class: 'link' }, t('fc_see_day'))),
-    forecastTable(c, (v0.recorded_at || '').slice(11, 16), v0.spot_id));
+    forecastTable(c, (v0.recorded_at || '').slice(11, 16), v0.spot_id, onSave ? { onSave } : {}));
 }
 
 async function viewTimeline() {
@@ -184,32 +189,6 @@ async function viewTimeline() {
         dayConditions(list),
         h('div', { class: 'cards' }, list.map(videoCard)))))
         : h('div', { class: 'empty card' }, t('empty'), ' ', h('a', { href: '#/subir' }, t('nav_upload'), ' →'))));
-  };
-  render();
-}
-
-// ================= pizarra =================
-async function viewBoard() {
-  const root = $app(); root.replaceChildren(nav('nav_board'), h('main', { class: 'wrap wide' }, h('p', { class: 'muted' }, t('loading'))));
-  await loadVideos();
-  const render = () => {
-    const vids = filtered();
-    const key = { session: (v) => `${fmtDate((v.recorded_at || '').slice(0, 10) + 'T12:00', { dateStyle: 'medium' })} · ${v.spot_name || ''}`, spot: (v) => v.spot_name || '–', board: (v) => v.board_name || '–', surfer: (v) => surferName(v), none: () => '' }[S.board.group] || (() => '');
-    const groups = new Map();
-    for (const v of vids) { const k = key(v); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(v); }
-    const grid = h('div', { class: 'board', style: `--z:${S.board.zoom}px` }, [...groups].map(([k, list]) => [
-      k ? h('h3', { class: 'gh' }, k, h('span', { class: 'muted' }, ` · ${list.length} ${t('videos_n')}`)) : null,
-      h('div', { class: 'bgrid' }, list.map((v) => h('a', { class: 'tile', href: `#/v/${v.id}` },
-        loopVideo(v),
-        h('div', { class: 'tile-meta' }, h('span', { class: 'who' }, avatar({ name: surferName(v), avatar_key: v.surfer_avatar }, 18), surferName(v)), stars(v.surf_rating)),
-        (v.flags || []).length ? h('div', { class: 'tile-flags' }, flagChips(v.flags)) : null))),
-    ]));
-    const zoom = h('input', { type: 'range', min: 120, max: 520, step: 10, value: S.board.zoom, oninput: (e) => { S.board.zoom = +e.target.value; grid.style.setProperty('--z', S.board.zoom + 'px'); store.set('sc_board', S.board); } });
-    const grp = h('select', { onchange: (e) => { S.board.group = e.target.value; store.set('sc_board', S.board); render(); } },
-      ['session', 'spot', 'board', 'surfer', 'none'].map((g) => h('option', { value: g, selected: S.board.group === g }, t('g_' + g))));
-    root.replaceChildren(nav('nav_board'), h('main', { class: 'wrap wide' },
-      h('div', { class: 'toolbar' }, surferFilter(render), h('label', {}, t('group_by'), ' ', grp), h('label', {}, t('zoom'), ' ', zoom)),
-      vids.length ? grid : h('div', { class: 'empty card' }, t('empty'))));
   };
   render();
 }
@@ -552,7 +531,7 @@ function viewUpload() {
     store.set('sc_last_spot', shared.spot_id); store.set('sc_last_board', shared.board_id);
     const todo = items.filter((i) => i.status === 'ready' || i.status === 'error');
     for (const [k, it] of todo.entries()) {
-      status.textContent = `${t('up_uploading')} ${k + 1}/${todo.length}…`;
+      status.textContent = `${t('up_uploading')} ${k + 1}/${todo.length}… ${t('keep_tab')}`;
       try { await uploadOne(it); } catch (e) { console.error(e); it.status = 'error'; it.error = e.message; it.draw(); }
     }
     busy = false; S.videos = null;
@@ -683,6 +662,17 @@ async function viewDetail(id) {
     h('h3', {}, t('conditions')), conditionsPanel(v.conditions),
     v.can_edit ? h('div', { class: 'actions' },
       h('button', { class: 'btn ghost', onclick: editForm }, t('edit')),
+      h('button', { class: 'btn ghost', title: t('regen_help'), onclick: async (e) => {
+        const btn = e.currentTarget; btn.disabled = true; btn.textContent = t('regen_working');
+        try {
+          const pv = await makePreview(media(v.original_key), player.currentTime);
+          const key = `videos/${v.id}/preview.${pv.ext}`;
+          await api(`upload/put?key=${encodeURIComponent(key)}`, { method: 'PUT', raw: pv.preview });
+          await api(`upload/put?key=${encodeURIComponent(`videos/${v.id}/poster.jpg`)}`, { method: 'PUT', raw: pv.poster });
+          await api('videos/' + v.id, { method: 'PATCH', body: { preview_key: key, highlight_at: player.currentTime } });
+          S.videos = null; btn.textContent = '✓ ' + t('regen_done');
+        } catch (x) { btn.textContent = x.message; btn.disabled = false; }
+      } }, '⟲ ', t('regen')),
       h('button', { class: 'btn danger', onclick: async () => { if (!confirm(t('confirm_delete'))) return; await api('videos/' + v.id, { method: 'DELETE' }); S.videos = null; location.hash = '#/'; } }, t('delete'))) : null);
 
   function editForm() {
@@ -873,7 +863,6 @@ async function route() {
   let m;
   try {
     if ((m = /^#\/v\/([a-f0-9]{16})/.exec(hash))) return await viewDetail(m[1]);
-    if (hash.startsWith('#/pizarra')) return await viewBoard();
     if (hash.startsWith('#/subir')) return viewUpload();
     if (hash.startsWith('#/amigos')) return viewFriends();
     if (hash.startsWith('#/perfil')) return viewProfile();

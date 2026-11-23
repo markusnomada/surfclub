@@ -1,6 +1,7 @@
 // Textos de la interfaz. Español es la base; inglés y portugués listos para activar desde el perfil.
 export const dict = {
   es: {
+    regen: 'Regenerar loop', regen_help: 'Pausa el video en el momento que quieres y presiona: el clip en loop se vuelve a generar desde ahí.', regen_working: 'Generando…', regen_done: 'Loop actualizado', keep_tab: 'Deja esta pestaña abierta y visible hasta terminar.',
     b_brand: 'Marca', b_model: 'Modelo', b_length: 'Largo', b_width: 'Ancho', b_thickness: 'Grosor', b_volume: 'Volumen (L)', b_construction: 'Composición', b_name: 'Nombre visible', b_details: 'Otros detalles', b_details_ph: 'Quillas, rocker, shaper…',
     b_need_one: 'Completa al menos marca, modelo o largo.', b_no_specs: 'Sin ficha técnica',
     my_body: 'Mis datos', my_body_help: 'Altura, peso y edad con fecha, para ver tu evolución. Solo tú los ves.', m_recorded_on: 'Fecha', m_height_cm: 'Altura (cm)', m_weight_kg: 'Peso (kg)', m_age: 'Edad', m_none: 'Aún no registras datos.',
@@ -56,6 +57,7 @@ export const dict = {
     err_bad_username: 'Usuario inválido: usa letras, números, punto o guion.', err_short_password: 'La clave debe tener al menos 6 caracteres.', err_forbidden: 'No tienes permiso.',
   },
   en: {
+    regen: 'Regenerate loop', regen_help: 'Pause the video where you want and press: the loop clip is rebuilt from there.', regen_working: 'Generating…', regen_done: 'Loop updated', keep_tab: 'Keep this tab open and visible until it finishes.',
     b_brand: 'Brand', b_model: 'Model', b_length: 'Length', b_width: 'Width', b_thickness: 'Thickness', b_volume: 'Volume (L)', b_construction: 'Construction', b_name: 'Display name', b_details: 'Other details', b_details_ph: 'Fins, rocker, shaper…',
     b_need_one: 'Fill in at least brand, model or length.', b_no_specs: 'No specs',
     my_body: 'My data', my_body_help: 'Height, weight and age with date, to track your progress. Only you can see them.', m_recorded_on: 'Date', m_height_cm: 'Height (cm)', m_weight_kg: 'Weight (kg)', m_age: 'Age', m_none: 'No data yet.',
@@ -106,6 +108,7 @@ export const dict = {
     err_bad_username: 'Invalid username: use letters, numbers, dot or dash.', err_short_password: 'Password must be at least 6 characters.', err_forbidden: 'Not allowed.',
   },
   pt: {
+    regen: 'Regerar loop', regen_help: 'Pause o vídeo no momento desejado e aperte: o loop é refeito a partir daí.', regen_working: 'Gerando…', regen_done: 'Loop atualizado', keep_tab: 'Deixe esta aba aberta e visível até terminar.',
     b_brand: 'Marca', b_model: 'Modelo', b_length: 'Comprimento', b_width: 'Largura', b_thickness: 'Espessura', b_volume: 'Volume (L)', b_construction: 'Construção', b_name: 'Nome visível', b_details: 'Outros detalhes', b_details_ph: 'Quilhas, rocker, shaper…',
     b_need_one: 'Preencha ao menos marca, modelo ou comprimento.', b_no_specs: 'Sem ficha técnica',
     my_body: 'Meus dados', my_body_help: 'Altura, peso e idade com data, para ver sua evolução. Só você vê.', m_recorded_on: 'Data', m_height_cm: 'Altura (cm)', m_weight_kg: 'Peso (kg)', m_age: 'Idade', m_none: 'Ainda sem dados.',

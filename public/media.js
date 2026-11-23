@@ -107,20 +107,30 @@ function pickMime() {
 }
 
 export async function makePreview(src, start, seconds = 4, width = 480) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = await recordPreview(src, start, seconds, width);
+    if (r.frames >= seconds * 8) return r; // al menos ~8 cuadros por segundo
+    console.warn('clip incompleto, reintentando', r.frames);
+  }
+  throw new Error('No se pudo generar el clip en loop. Deja la pestaña abierta y en primer plano mientras se sube.');
+}
+
+// Graba el clip en tiempo real. Si la pestaña pasa a segundo plano, pausa video y grabación
+// (el navegador deja de dibujar) y los reanuda al volver, para no cortar el clip.
+async function recordPreview(src, start, seconds, width) {
   const v = await loadVideo(src);
   const W = width, H = Math.round(((v.videoHeight / v.videoWidth) * W) / 2) * 2;
   const s = Math.max(0, Math.min(start, v.duration - seconds));
   const c = document.createElement('canvas'); c.width = W; c.height = H;
   const ctx = c.getContext('2d');
-  await seek(v, s);
-  ctx.drawImage(v, 0, 0, W, H);
 
-  // poster a 960 px desde el mismo punto
+  // poster a 960 px desde el medio del clip
   const pc = document.createElement('canvas'); pc.width = 960; pc.height = Math.round((v.videoHeight / v.videoWidth) * 960);
   await seek(v, s + seconds / 2);
   pc.getContext('2d').drawImage(v, 0, 0, pc.width, pc.height);
   const poster = await new Promise((r) => pc.toBlob(r, 'image/jpeg', 0.8));
   await seek(v, s);
+  ctx.drawImage(v, 0, 0, W, H);
 
   const mime = pickMime();
   const stream = c.captureStream(30);
@@ -128,21 +138,27 @@ export async function makePreview(src, start, seconds = 4, width = 480) {
   const parts = [];
   rec.ondataavailable = (e) => e.data.size && parts.push(e.data);
   const stopped = new Promise((r) => (rec.onstop = r));
+  let frames = 0, done = false;
 
-  const draw = () => {
-    ctx.drawImage(v, 0, 0, W, H);
-    if (v.currentTime >= s + seconds || v.ended) {
-      v.pause(); rec.stop(); return;
-    }
-    if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(draw); else requestAnimationFrame(draw);
+  const onVis = () => {
+    if (done) return;
+    if (document.hidden) { v.pause(); if (rec.state === 'recording') rec.pause(); }
+    else { if (rec.state === 'paused') rec.resume(); v.play().catch(() => {}); tick(); }
   };
+  const finish = () => { if (done) return; done = true; v.pause(); document.removeEventListener('visibilitychange', onVis); if (rec.state !== 'inactive') rec.stop(); };
+  const tick = () => {
+    if (done || document.hidden) return;
+    ctx.drawImage(v, 0, 0, W, H); frames++;
+    if (v.currentTime >= s + seconds || v.ended) return finish();
+    if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(tick); else requestAnimationFrame(tick);
+  };
+  document.addEventListener('visibilitychange', onVis);
   rec.start(250);
-  await v.play();
-  draw();
+  if (document.hidden) rec.pause(); else { await v.play(); tick(); }
   await stopped;
   v.removeAttribute('src'); v.load();
   const type = (rec.mimeType || mime || 'video/webm').split(';')[0];
-  return { preview: new Blob(parts, { type }), ext: type.includes('mp4') ? 'mp4' : 'webm', poster };
+  return { preview: new Blob(parts, { type }), ext: type.includes('mp4') ? 'mp4' : 'webm', poster, frames };
 }
 
 // ---------- subida por partes a R2 a través de la API ----------
