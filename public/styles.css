@@ -124,7 +124,7 @@ textarea { resize: vertical; }
 .tabs button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
 .clist { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 10px; }
 .c { background: var(--card); border-radius: 12px; padding: 10px 14px; box-shadow: var(--shadow); }
-.c.coach { border-left: 4px solid var(--sun); }
+.c.coach { background: #fff9ee; box-shadow: var(--shadow), inset 0 0 0 1px #f3dfb8; }
 .c p { margin: 6px 0 0; white-space: pre-wrap; }
 .chead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: .88rem; }
 .ts { border: 0; background: var(--foam); color: var(--sea); border-radius: 8px; padding: 2px 8px; cursor: pointer; font: inherit; font-size: .8rem; font-weight: 600; }
