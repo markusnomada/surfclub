@@ -1,4 +1,4 @@
-import { currentMember } from '../../lib/auth.js';
+import { currentMember, login, logoutCookie, hashPassword } from '../../lib/auth.js';
 import { fetchConditions } from '../../lib/conditions.js';
 import { ensureSchema } from '../../lib/schema.js';
 
@@ -85,6 +85,16 @@ export async function onRequest(context) {
   const url = new URL(request.url);
 
   await ensureSchema(env.DB);
+
+  if (path === 'login' && method === 'POST') {
+    const cookie = await login(request, env);
+    if (!cookie) return err('bad_login', 401);
+    return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json', 'set-cookie': cookie } });
+  }
+  if (path === 'logout' && method === 'POST') {
+    return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json', 'set-cookie': logoutCookie() } });
+  }
+
   const auth = await currentMember(request, env);
   if (auth.error) return json(auth, 401);
   const me = auth.member;
@@ -103,6 +113,10 @@ export async function onRequest(context) {
       const b = await request.json();
       if (b.lang && ['es', 'en', 'pt'].includes(b.lang)) await env.DB.prepare('UPDATE members SET lang = ? WHERE email = ?').bind(b.lang, me.email).run();
       if (b.name) await env.DB.prepare('UPDATE members SET name = ? WHERE email = ?').bind(String(b.name).slice(0, 60), me.email).run();
+      if (b.password) {
+        if (String(b.password).length < 6) return err('short_password');
+        await env.DB.prepare('UPDATE members SET pass_hash = ? WHERE email = ?').bind(await hashPassword(String(b.password)), me.email).run();
+      }
       return json({ ok: true });
     }
 
@@ -110,11 +124,13 @@ export async function onRequest(context) {
     if (path === 'members' && method === 'POST') {
       if (me.role !== 'admin') return err('forbidden', 403);
       const b = await request.json();
-      const email = String(b.email || '').trim().toLowerCase();
-      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return err('bad_email');
+      const username = String(b.username || '').trim().toLowerCase();
+      if (!/^[a-z0-9._-]{2,30}$/.test(username)) return err('bad_username');
+      if (String(b.password || '').length < 6) return err('short_password');
+      const email = String(b.email || '').trim().toLowerCase() || `${username}@surfclub.local`;
       const role = ['member', 'coach', 'admin'].includes(b.role) ? b.role : 'member';
-      await env.DB.prepare('INSERT INTO members (email, name, role) VALUES (?, ?, ?) ON CONFLICT(email) DO UPDATE SET name = excluded.name, role = excluded.role')
-        .bind(email, String(b.name || email.split('@')[0]).slice(0, 60), role).run();
+      await env.DB.prepare('INSERT INTO members (email, name, role, username, pass_hash) VALUES (?, ?, ?, ?, ?) ON CONFLICT(email) DO UPDATE SET name = excluded.name, role = excluded.role, username = excluded.username, pass_hash = excluded.pass_hash')
+        .bind(email, String(b.name || username).slice(0, 60), role, username, await hashPassword(String(b.password))).run();
       return json({ ok: true });
     }
 

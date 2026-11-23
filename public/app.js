@@ -423,20 +423,30 @@ function viewProfile() {
   const bName = h('input', { type: 'text', placeholder: t('up_board_name') });
   const bDet = h('input', { type: 'text', placeholder: t('details') });
 
+  const alertBox = h('p', { class: 'small muted' });
+  const newPw = h('input', { type: 'password', placeholder: t('new_password'), autocomplete: 'new-password' });
+  const pwMsg = h('span', { class: 'small muted' });
   const admin = S.me.role === 'admin' ? (() => {
+    const un = h('input', { type: 'text', placeholder: t('username'), autocapitalize: 'off' });
+    const pw = h('input', { type: 'text', placeholder: t('password') });
     const em = h('input', { type: 'email', placeholder: t('email') });
     const nm = h('input', { type: 'text', placeholder: t('name') });
     const rl = h('select', {}, ['member', 'coach', 'admin'].map((r) => h('option', { value: r }, t('role_' + r))));
     return h('section', { class: 'card' }, h('h3', {}, t('members')),
-      h('ul', { class: 'plain' }, S.members.map((m) => h('li', {}, h('strong', {}, m.name), ' ', h('span', { class: 'muted' }, m.email, ' · ', t('role_' + m.role))))),
-      h('form', { class: 'inline', onsubmit: async (e) => { e.preventDefault(); await api('members', { method: 'POST', body: { email: em.value, name: nm.value, role: rl.value } }); await boot(); viewProfile(); } },
-        em, nm, rl, h('button', { class: 'btn' }, t('add_member'))),
+      h('ul', { class: 'plain' }, S.members.map((m) => h('li', {}, h('strong', {}, m.name), ' ', h('span', { class: 'muted' }, t('role_' + m.role))))),
+      h('form', { class: 'inline', onsubmit: async (e) => { e.preventDefault(); try { await api('members', { method: 'POST', body: { username: un.value, password: pw.value, email: em.value, name: nm.value, role: rl.value } }); await boot(); viewProfile(); } catch (x) { alertBox.textContent = x.message; } } },
+        un, pw, nm, em, rl, h('button', { class: 'btn' }, t('add_member'))),
+      alertBox,
       h('p', { class: 'small muted' }, t('access_note')));
   })() : null;
 
   root.replaceChildren(nav('nav_profile'), h('main', { class: 'wrap narrow' },
-    h('h1', {}, S.me.name), h('p', { class: 'muted' }, S.me.email),
+    h('h1', {}, S.me.name), h('p', { class: 'muted' }, '@', S.me.username || S.me.email),
     h('section', { class: 'card' }, h('label', { class: 'field' }, h('span', {}, t('language')), langSel)),
+    h('section', { class: 'card' }, h('h3', {}, t('change_password')),
+      h('form', { class: 'inline', onsubmit: async (e) => { e.preventDefault(); try { await api('me', { method: 'PATCH', body: { password: newPw.value } }); newPw.value = ''; pwMsg.textContent = t('saved'); } catch (x) { pwMsg.textContent = x.message; } } },
+        newPw, h('button', { class: 'btn' }, t('save'))), pwMsg,
+      h('p', {}, h('button', { class: 'btn ghost', onclick: async () => { await api('logout', { method: 'POST' }); location.reload(); } }, t('logout')))),
     h('section', { class: 'card' }, h('h3', {}, t('my_boards')),
       h('ul', { class: 'plain' }, myBoards.map((b) => h('li', {}, h('strong', {}, b.name), b.details ? h('span', { class: 'muted' }, ' · ', b.details) : null))),
       h('form', { class: 'inline', onsubmit: async (e) => { e.preventDefault(); if (!bName.value) return; S.boards.push(await api('boards', { method: 'POST', body: { name: bName.value, details: bDet.value } })); viewProfile(); } },
@@ -467,14 +477,30 @@ async function route() {
   }
 }
 
+function loginScreen() {
+  setLang('es');
+  const u = h('input', { type: 'text', autocomplete: 'username', autocapitalize: 'off', required: true });
+  const p = h('input', { type: 'password', autocomplete: 'current-password', required: true });
+  const msg = h('p', { class: 'small', style: 'color:var(--coral)' });
+  $app().replaceChildren(h('main', { class: 'login' },
+    h('form', { class: 'card login-card', onsubmit: async (e) => {
+      e.preventDefault(); msg.textContent = '';
+      try { await api('login', { method: 'POST', body: { username: u.value, password: p.value } }); await boot(); route(); }
+      catch { msg.textContent = t('bad_login'); }
+    } },
+      h('div', { class: 'login-mark' }, '≈'), h('h1', {}, t('login_title')),
+      h('label', { class: 'field' }, h('span', {}, t('username')), u),
+      h('label', { class: 'field' }, h('span', {}, t('password')), p),
+      msg, h('button', { class: 'btn big' }, t('enter')))));
+  u.focus();
+}
+
 window.addEventListener('hashchange', route);
 (async () => {
   try { await boot(); }
   catch (e) {
-    setLang((navigator.language || 'es').slice(0, 2));
-    const msg = e.data?.error === 'not_member' ? `${t('not_member')} (${e.data.email})` : t('unauth');
-    $app().replaceChildren(h('main', { class: 'wrap narrow' }, h('div', { class: 'card' }, h('h1', {}, t('brand')), h('p', {}, msg))));
-    return;
+    if (e.status !== 401) { $app().replaceChildren(h('main', { class: 'wrap narrow' }, h('div', { class: 'card' }, String(e.message)))); return; }
+    return loginScreen();
   }
   route();
 })();

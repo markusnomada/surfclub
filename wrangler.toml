@@ -10,9 +10,3 @@ database_id = "5400eaf3-af9e-464e-8cbd-eb132f5c2a36"
 [[r2_buckets]]
 binding = "VIDEOS"
 bucket_name = "surfclub-videos"
-
-[vars]
-# Cloudflare Access (Zero Trust). Se completan al crear la aplicación de Access.
-# Mientras estén vacías, la API rechaza todo (salvo DEV_USER en desarrollo local).
-ACCESS_TEAM_DOMAIN = ""   # ej. "markusnomada.cloudflareaccess.com"
-ACCESS_AUD = ""           # "Application Audience (AUD) Tag" de la app en Access
