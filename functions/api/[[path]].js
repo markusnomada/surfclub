@@ -1,5 +1,6 @@
 import { currentMember } from '../../lib/auth.js';
 import { fetchConditions } from '../../lib/conditions.js';
+import { ensureSchema } from '../../lib/schema.js';
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
@@ -83,6 +84,7 @@ export async function onRequest(context) {
   const method = request.method;
   const url = new URL(request.url);
 
+  await ensureSchema(env.DB);
   const auth = await currentMember(request, env);
   if (auth.error) return json(auth, 401);
   const me = auth.member;

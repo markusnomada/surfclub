@@ -5,7 +5,7 @@ pages_build_output_dir = "public"
 [[d1_databases]]
 binding = "DB"
 database_name = "surfclub"
-database_id = "ccc8f5ae-7241-4a23-9d54-94d69fe0bccf"
+database_id = "5400eaf3-af9e-464e-8cbd-eb132f5c2a36"
 
 [[r2_buckets]]
 binding = "VIDEOS"
